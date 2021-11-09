@@ -1,0 +1,8 @@
+#!/bin/sh
+
+if [ ! -f ./root.pem ]; then
+   echo "Copy root certificate to ./root.pem and then rerun this script."
+   exit 1
+fi   
+
+keytool -importcert -file ./root.pem -storepass storepass -trustcacerts -noprompt -keystore ./data.keystore -alias couchbase

@@ -1,0 +1,6 @@
+[couchbase]
+enabled = 1
+name = libcouchbase package for centos8 x86_64
+baseurl = https://packages.couchbase.com/clients/c/repos/rpm/el8/x86_64
+gpgcheck = 1
+gpgkey = https://packages.couchbase.com/clients/c/repos/rpm/couchbase.key
