@@ -70,6 +70,12 @@ while true; do
             docker run -it -v $HOME/output${n}:/output --network host --name ycsb${n} mminichino/${CONTAINER} /bench/bin/envrun.sh -d $DOMAIN_NAME -n $DNS_SERVER -- bash
             exit
             ;;
+    --cmd )
+	    [ -z "$@" ] && err_exit "Command option requires at least one parameter."
+            shift
+            docker run -it -v $HOME/output${n}:/output --network host --name ycsb${n} mminichino/${CONTAINER} $@
+            exit
+            ;;
     --log )
             shift
             docker logs -n 25 ycsb${n}
