@@ -71,7 +71,7 @@ while true; do
             exit
             ;;
     --cmd )
-	    [ -z "$@" ] && err_exit "Command option requires at least one parameter."
+	    [ -z "$1" ] && err_exit "Command option requires at least one parameter."
             shift
             docker run -it -v $HOME/output${n}:/output --network host --name ycsb${n} mminichino/${CONTAINER} $@
             exit
