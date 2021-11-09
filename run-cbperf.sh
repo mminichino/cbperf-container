@@ -67,6 +67,13 @@ while true; do
             ;;
     --shell )
             shift
+            if [ -n "$(docker ps -q -a -f name=ycsb${n})" ]; then
+              echo -n "Remove existing container ycsb${n}? [y/n]: "
+              read ANSWER
+              [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
+              docker stop ycsb${n}
+              docker rm ycsb${n}
+            fi
             docker run -it -v $HOME/output${n}:/output --network host --name ycsb${n} mminichino/${CONTAINER} /bench/bin/envrun.sh -d $DOMAIN_NAME -n $DNS_SERVER -- bash
             exit
             ;;
