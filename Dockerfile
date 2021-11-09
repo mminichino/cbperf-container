@@ -10,7 +10,11 @@ FROM base
 RUN git clone https://github.com/mminichino/YCSB /bench/couchbase/YCSB
 RUN mkdir /output
 RUN mkdir /bench/bin
+RUN mkdir /bench/lib
 
 WORKDIR /bench/couchbase/YCSB
 COPY --chown=root:root make_cert .
 COPY --chown=root:root envrun.sh /bench/bin
+COPY --chown=root:root cb_pf.sh /bench/bin
+COPY --chown=root:root libcommon.sh /bench/lib
+COPY --chown=root:root libcouchbase.sh /bench/lib
