@@ -17,6 +17,7 @@ workload*.dat
 *.iml
 *.ipr
 *.iws
+venv/
 
 # ignore standard Vim and Emacs temp files
 *.swp
