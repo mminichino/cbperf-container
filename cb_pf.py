@@ -137,6 +137,8 @@ class dynamicInventory(object):
                                    '-t', str(self.loadThreadCount),
                                    '-R',
                                    '-J',
+                                   '-m', str(self.minSize),
+                                   '-M', str(self.maxSize),
                                    '-I', str(self.recordCount),
                                    '--populate-only'],
                                   stdin=subprocess.PIPE,
@@ -157,6 +159,8 @@ class dynamicInventory(object):
                                    '-r', str(self.writePercent),
                                    '-c', str(self.operationCount),
                                    '-J',
+                                   '-m', str(self.minSize),
+                                   '-M', str(self.maxSize),
                                    '-I', str(self.recordCount),
                                    '-n'],
                                   stdin=subprocess.PIPE,
@@ -252,6 +256,8 @@ class dynamicInventory(object):
         parser.add_argument('--memquota', action='store')
         parser.add_argument('--workload', action='store')
         parser.add_argument('--batch', action='store')
+        parser.add_argument('--min', action='store')
+        parser.add_argument('--max', action='store')
         parser.add_argument('--manual', action='store_true')
         parser.add_argument('--load', action='store_true')
         parser.add_argument('--run', action='store_true')
@@ -266,6 +272,8 @@ class dynamicInventory(object):
         self.operationCount = self.args.ops if self.args.ops else 50
         self.loadThreadCount = self.args.tload if self.args.tload else 32
         self.runThreadCount = self.args.trun if self.args.trun else 256
+        self.minSize = self.args.min if self.args.min else 50
+        self.maxSize = self.args.max if self.args.max else 5120
         self.bucketMemory = self.args.memquota
         self.runWorkload = self.args.workload
         self.batchSize = self.args.batch if self.args.batch else 100

@@ -5,6 +5,7 @@ target
 output*
 workloads/*.dat
 workload*.dat
+data-load.dat
 
 # ignore standard Eclipse files
 .project
