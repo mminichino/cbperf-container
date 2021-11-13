@@ -9,12 +9,12 @@ import sys
 import argparse
 import json
 import re
-import subprocess
+from jinja2 import Template
 import time
 import asyncio
 import acouchbase.cluster
 import requests
-import math
+from datetime import datetime
 import warnings
 from couchbase_core.items import Item, ItemOptionDict
 from couchbase_core._libcouchbase import LOCKMODE_EXC, LOCKMODE_NONE, LOCKMODE_WAIT
@@ -70,11 +70,17 @@ class dynamicInventory(object):
                 sys.exit(0)
 
         if not self.manualMode or self.loadOnly:
+            if not self.inputFile:
+                print("Please provide a source JSON file with the file parameter.")
+                sys.exit(1)
             self.dataLoad()
             if self.loadOnly:
                 sys.exit(0)
 
         if not self.manualMode or self.runOnly:
+            if not self.inputFile:
+                print("Please provide a source JSON file with the file parameter.")
+                sys.exit(1)
             for key in self.scenarioWrite:
                 if self.runWorkload:
                     if self.runWorkload != key:
@@ -155,17 +161,39 @@ class dynamicInventory(object):
                 print("Could not drop bucket: %s" % str(e))
                 sys.exit(1)
 
-    def _getNextId(self, n):
+    def _randomNumber(self, n):
         min_lc = ord(b'0')
         len_lc = 10
         ba = bytearray(os.urandom(n))
         for i, b in enumerate(ba):
             ba[i] = min_lc + b % len_lc
-        return ba
+        return ba.decode('utf-8')
 
-    def asyncInsert(self, q, jsonDoc, numRecords, startNum):
+    def _randomStringLower(self, n):
+        min_lc = ord(b'a')
+        len_lc = 26
+        ba = bytearray(os.urandom(n))
+        for i, b in enumerate(ba):
+            ba[i] = min_lc + b % len_lc
+        return ba.decode('utf-8')
+
+    def _randomStringUpper(self, n):
+        min_lc = ord(b'A')
+        len_lc = 26
+        ba = bytearray(os.urandom(n))
+        for i, b in enumerate(ba):
+            ba[i] = min_lc + b % len_lc
+        return ba.decode('utf-8')
+
+    def asyncInsert(self, q, jsonDoc, numRecords, startNum, thread):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        telemetry = {
+            'tps': 0,
+            'ops': 0,
+            'time': 0,
+            'thread': thread
+        }
         try:
             cluster, bucket = self.asyncConnect()
             collection = bucket.scope("_default").collection("_default")
@@ -184,20 +212,33 @@ class dynamicInventory(object):
             else:
                 runBatchSize = self.batchSize
             numRemaining = numRemaining - runBatchSize
-            q.put(runBatchSize)
             batch = ItemOptionDict()
+            runJsonDoc = self.processTemplate(jsonDoc)
             for y in range(int(runBatchSize)):
-                item = Item(str(format(counter, '032')), jsonDoc)
+                item = Item(str(format(counter, '032')), runJsonDoc)
                 counter += 1
                 # batch = ItemOptionDict()
                 batch.add(item)
+            begin_time = time.perf_counter()
             loop.run_until_complete(collection.upsert_multi(batch))
+            end_time = time.perf_counter()
+            time_delta = end_time - begin_time
+            transPerSec = runBatchSize / time_delta
+            telemetry['tps'] = transPerSec
+            telemetry['ops'] = runBatchSize
+            telemetry['time'] = time_delta
+            q.put(telemetry)
         loop.close()
 
-    def asyncRead(self, q, numRecords, startNum):
+    def asyncRead(self, q, numRecords, startNum, thread):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        tasks = []
+        telemetry = {
+            'tps': 0,
+            'ops': 0,
+            'time': 0,
+            'thread': thread
+        }
         try:
             cluster, bucket = self.asyncConnect()
             collection = bucket.scope("_default").collection("_default")
@@ -216,12 +257,19 @@ class dynamicInventory(object):
             else:
                 runBatchSize = self.batchSize
             numRemaining = numRemaining - runBatchSize
-            q.put(runBatchSize)
             batch = []
             for y in range(int(runBatchSize)):
                 batch.append(str(format(counter, '032')))
                 counter += 1
+            begin_time = time.perf_counter()
             loop.run_until_complete(collection.get_multi(batch))
+            end_time = time.perf_counter()
+            time_delta = end_time - begin_time
+            transPerSec = runBatchSize / time_delta
+            telemetry['tps'] = transPerSec
+            telemetry['ops'] = runBatchSize
+            telemetry['time'] = time_delta
+            q.put(telemetry)
         loop.close()
 
     def insertDocuments(self, q, jsonDoc, numRecords, startNum):
@@ -240,30 +288,87 @@ class dynamicInventory(object):
         finally:
             loop.close()
 
-    def printStatusThread(self, q, count):
-
+    def printStatusThread(self, q, count, threads):
+        threadVector = [0 for i in range(threads)]
+        totalTps = 0
+        averageTps = 0
+        maxTps = 0
+        totalTime = 0
+        averageTime = 0
+        maxTime = 0
+        sampleCount = 1
+        time_per_record = 0
         while True:
             while not q.empty():
-                entry = int(q.get())
-                if entry == 0:
-                    sys.stdout.write("\rOperation Complete.\033[K\n")
-                    print("%d documents processed." % self.currentOp)
-                    return
-                self.currentOp += entry
+                entry = q.get()
+                if 'control' in entry:
+                    if entry['control'] == 0:
+                        sys.stdout.write("\rOperation Complete.\033[K\n")
+                        print("%d average TPS." % averageTps)
+                        print("%d maximum TPS." % maxTps)
+                        print("%.6f average time." % averageTime)
+                        print("%.6f maximum time." % maxTime)
+                        return
+                self.currentOp += entry['ops']
+                time_delta = entry['time']
+                reporting_thread = entry['thread']
+                threadVector[reporting_thread] = entry['tps']
+                trans_per_sec = sum(threadVector)
+                if all([v != 0 for v in threadVector]):
+                    totalTps = totalTps + trans_per_sec
+                    time_per_record = time_delta / entry['ops']
+                    totalTime = totalTime + time_per_record
+                    averageTps = totalTps / sampleCount
+                    averageTime = totalTime / sampleCount
+                    sampleCount += 1
+                    if trans_per_sec > maxTps:
+                        maxTps = trans_per_sec
+                    if time_per_record > maxTime:
+                        maxTime = time_per_record
                 self.percentage = (self.currentOp / count) * 100
                 end_char = '\r'
-                print("Document %d of %d in progress, %d%% completed ... " % (self.currentOp, count, self.percentage), end=end_char)
+                print("Document %d of %d in progress, %.6f time, %.0f TPS, %d%% completed ... " %
+                      (self.currentOp, count, time_per_record, trans_per_sec, self.percentage), end=end_char)
             time.sleep(1)
 
     def printStatusReset(self):
         self.currentOp = 0
         self.percentage = 0
 
+    def processTemplate(self, json_block):
+        template = json.dumps(json_block)
+        t = Template(template)
+        nowTime = datetime.now()
+        datetimestr = nowTime.strftime("%Y-%m-%d %H:%M:%S")
+        creditcard = self._randomNumber(4) + '-' + self._randomNumber(4) + '-' + self._randomNumber(4) + '-' + self._randomNumber(4)
+        ssn = self._randomNumber(3) + '-' + self._randomNumber(2) + '-' + self._randomNumber(4)
+        randfour = self._randomNumber(4)
+        zipcode = self._randomNumber(5)
+        randten = self._randomNumber(10)
+        randdollar = self._randomNumber(4) + '.' + self._randomNumber(2)
+        randstring = self._randomStringLower(16)
+        formattedBlock = t.render(date_time=datetimestr, credit_card=creditcard, social=ssn, rand_four=randfour,
+                              rand_ten=randten, rand_string=randstring, zip_code=zipcode, rand_dollar=randdollar)
+        finished = formattedBlock.encode('ascii')
+        jsonBlock = json.loads(finished)
+        return jsonBlock
+
+    def templateThread(self, json_block, count, q):
+        retries = 1
+        for x in range(int(round(count)+1)):
+            # while q.qsize() > 1000:
+            #     time.sleep(0.005 * float(retries))
+            #     retries += 1
+            jsonDoc = self.processTemplate(json_block)
+            q.put(jsonDoc)
+            retries = 1
+
     def dataLoad(self):
         inputFileJson = {}
         threadSet = []
         threadStat = []
         q = Queue()
+        genq = Queue()
         recordBlock = 0
         recordRemaining = 0
         # counter = atomicCounter()
@@ -275,7 +380,8 @@ class dynamicInventory(object):
             print("Can not open input file: %s" % str(e))
             sys.exit(1)
 
-        inputFileData = re.compile('ISODate\(("[^"]+")\)').sub('\\1', inputFileData)
+        # inputFileData = re.compile('ISODate\(("[^"]+")\)').sub('\\1', inputFileData)
+
         try:
             inputFileJson = json.loads(inputFileData)
         except Exception as e:
@@ -288,8 +394,10 @@ class dynamicInventory(object):
 
         # self.asyncConnect()
 
-        statusThread = threading.Thread(target=self.printStatusThread, args=(q, int(self.recordCount),))
+        statusThread = threading.Thread(target=self.printStatusThread, args=(q, int(self.recordCount), int(self.loadThreadCount),))
         statusThread.start()
+        # templateThread = threading.Thread(target=self.templateThread, args=(inputFileJson, int(self.recordCount) / int(self.batchSize), genq,))
+        # templateThread.start()
 
         recordRemaining = int(self.recordCount)
         recordBlock = round(recordRemaining / int(self.loadThreadCount))
@@ -305,15 +413,18 @@ class dynamicInventory(object):
                 recordRemaining = recordRemaining - numRecords
                 # q.put(self.currentOp)
                 # digits = int(math.log10(recordBlock)) + 1
-                threadSet[x] = threading.Thread(target=self.asyncInsert, args=(q, inputFileJson, numRecords, recordStart,))
+                threadSet[x] = threading.Thread(target=self.asyncInsert, args=(q, inputFileJson, numRecords, recordStart, x,))
                 threadSet[x].start()
                 recordStart = recordStart + numRecords
 
         for y in range(self.loadThreadCount):
             threadSet[y].join()
 
-        q.put(0)
+        telemetry = {'control': 0}
+        q.put(telemetry)
         statusThread.join()
+        # templateThread.join()
+        self.printStatusReset()
 
     def kvTest(self, testKey):
         inputFileJson = {}
@@ -338,8 +449,10 @@ class dynamicInventory(object):
         for i in range(self.runThreadCount):
             threadSet.append(0)
 
-        statusThread = threading.Thread(target=self.printStatusThread, args=(q, int(self.recordCount),))
+        statusThread = threading.Thread(target=self.printStatusThread, args=(q, int(self.recordCount), int(self.runThreadCount),))
         statusThread.start()
+        # templateThread = threading.Thread(target=self.templateThread, args=(inputFileJson, int(self.recordCount) / int(self.batchSize), genq,))
+        # templateThread.start()
 
         writeThreads = round((int(self.writePercent) / 100) * self.runThreadCount)
         readThreads = self.runThreadCount - writeThreads
@@ -356,137 +469,21 @@ class dynamicInventory(object):
                     break
                 recordRemaining = recordRemaining - numRecords
                 if writeThreads > 0:
-                    threadSet[x] = threading.Thread(target=self.asyncInsert, args=(q, inputFileJson, numRecords, recordStart,))
+                    threadSet[x] = threading.Thread(target=self.asyncInsert, args=(q, inputFileJson, numRecords, recordStart, x,))
                     writeThreads -= 1
                 else:
-                    threadSet[x] = threading.Thread(target=self.asyncRead, args=(q, numRecords, recordStart,))
+                    threadSet[x] = threading.Thread(target=self.asyncRead, args=(q, numRecords, recordStart, x,))
                 threadSet[x].start()
                 recordStart = recordStart + numRecords
 
         for y in range(self.runThreadCount):
             threadSet[y].join()
 
-        q.put(0)
+        telemetry = {'control': 0}
+        q.put(telemetry)
         statusThread.join()
+        # templateThread.join()
         self.printStatusReset()
-
-    def stdout_reader(self):
-        for line in iter(self.p.stdout.readline, b''):
-            self.out_queue.put(line.decode('utf-8'))
-
-    def stderr_reader(self):
-        for line in iter(self.p.stderr.readline, b''):
-            self.err_queue.put(line.decode('utf-8'))
-
-    def pfLoad(self):
-        self.p = subprocess.Popen(['cbc-pillowfight',
-                                   '-U', "couchbase://" + self.host + "/" + self.bucket,
-                                   '-u', self.username,
-                                   '-P', self.password,
-                                   '-t', str(self.loadThreadCount),
-                                   '-R',
-                                   '-J',
-                                   '-I', str(self.recordCount),
-                                   '--populate-only'],
-                                  stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE)
-        self.out_thread = threading.Thread(target=self.stdout_reader)
-        self.err_thread = threading.Thread(target=self.stderr_reader)
-        self.out_thread.start()
-        self.err_thread.start()
-
-    def pfRun(self):
-        self.p = subprocess.Popen(['cbc-pillowfight',
-                                   '-U', "couchbase://" + self.host + "/" + self.bucket,
-                                   '-u', self.username,
-                                   '-P', self.password,
-                                   '-t', str(self.runThreadCount),
-                                   '-R',
-                                   '-r', str(self.writePercent),
-                                   '-c', str(self.operationCount),
-                                   '-J',
-                                   '-I', str(self.recordCount),
-                                   '-n'],
-                                  stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE)
-        self.out_thread = threading.Thread(target=self.stdout_reader)
-        self.err_thread = threading.Thread(target=self.stderr_reader)
-        self.out_thread.start()
-        self.err_thread.start()
-
-    def end(self):
-        # self.p.terminate()
-        self.p.wait()
-        self.out_thread.join()
-        self.err_thread.join()
-
-    def gatherStats(self, writeFile):
-        record = 0
-        total = 0
-        maximum = 0
-        rollingRecord = 0
-        rollingTotal = 0
-        startTime = time.time()
-        while True:
-            try:
-                errline = self.err_queue.get(block=False)
-                errlinestr = '{0}'.format(errline).strip()
-                if errlinestr.startswith('OPS'):
-                    opsec = errlinestr.split()[-1]
-                    record = record + 1
-                    rollingRecord = rollingRecord + 1
-                    total = total + int(opsec)
-                    rollingTotal = rollingTotal + int(opsec)
-                    if int(opsec) > maximum:
-                        maximum = int(opsec)
-                    nowTime = time.time()
-                    if nowTime - startTime >= 5:
-                        print("Ops/sec: %d" % (int(rollingTotal) / int(rollingRecord)))
-                        startTime = nowTime
-                        rollingTotal = 0
-                        rollingRecord = 0
-            except Empty:
-                poll = self.p.poll()
-                if poll is not None:
-                    break
-                else:
-                    pass
-        average = total / record
-        outString = "Average Ops/Sec: {:.0f}\n"
-        writeFile.write(outString.format(average))
-        outString = "Maximum Ops/Sec: {}\n"
-        writeFile.write(outString.format(str(maximum)))
-
-    def loadData(self):
-        summaryFile = "data-load.dat"
-        try:
-            datFile = open(summaryFile, "w")
-        except OSError as e:
-            print("Can not open test summary file: %s" % str(e))
-            sys.exit(1)
-        print("Loading %s records into bucket %s" % (str(self.recordCount), str(self.bucket)))
-        self.pfLoad()
-        self.gatherStats(datFile)
-        self.end()
-        datFile.close()
-        print("Load complete.")
-
-    def runTest(self, scenario):
-        summaryFile = "workload" + scenario + ".dat"
-        operations = int(self.operationCount) * int(self.batchSize)
-        try:
-            datFile = open(summaryFile, "w")
-        except OSError as e:
-            print("Can not open test summary file: %s" % str(e))
-            sys.exit(1)
-        print("Running scenario \"%s\" with %s operations on bucket %s" % (str(scenario), str(operations), str(self.bucket)))
-        self.pfRun()
-        self.gatherStats(datFile)
-        self.end()
-        datFile.close()
-        print("Run complete.")
 
     def parse_args(self):
         parser = argparse.ArgumentParser()
