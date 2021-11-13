@@ -15,6 +15,7 @@ import asyncio
 import acouchbase.cluster
 import requests
 from datetime import datetime
+from statistics import mean
 import warnings
 from couchbase_core.items import Item, ItemOptionDict
 from couchbase_core._libcouchbase import LOCKMODE_EXC, LOCKMODE_NONE, LOCKMODE_WAIT
@@ -192,7 +193,7 @@ class dynamicInventory(object):
             'tps': 0,
             'ops': 0,
             'time': 0,
-            'thread': thread
+            'thread': thread,
         }
         try:
             cluster, bucket = self.asyncConnect()
@@ -237,7 +238,7 @@ class dynamicInventory(object):
             'tps': 0,
             'ops': 0,
             'time': 0,
-            'thread': thread
+            'thread': thread,
         }
         try:
             cluster, bucket = self.asyncConnect()
@@ -298,9 +299,11 @@ class dynamicInventory(object):
         maxTime = 0
         sampleCount = 1
         time_per_record = 0
+        trans_per_sec = 0
         while True:
             while not q.empty():
                 entry = q.get()
+                # print(json.dumps(entry))
                 if 'control' in entry:
                     if entry['control'] == 0:
                         sys.stdout.write("\rOperation Complete.\033[K\n")
@@ -313,8 +316,9 @@ class dynamicInventory(object):
                 time_delta = entry['time']
                 reporting_thread = entry['thread']
                 threadVector[reporting_thread] = entry['tps']
-                trans_per_sec = sum(threadVector)
+                # trans_per_sec = sum(threadVector)
                 if all([v != 0 for v in threadVector]):
+                    trans_per_sec = mean(threadVector) * len(threadVector)
                     totalTps = totalTps + trans_per_sec
                     time_per_record = time_delta / entry['ops']
                     totalTime = totalTime + time_per_record
@@ -398,6 +402,8 @@ class dynamicInventory(object):
         statusThread.start()
         # templateThread = threading.Thread(target=self.templateThread, args=(inputFileJson, int(self.recordCount) / int(self.batchSize), genq,))
         # templateThread.start()
+        print("Starting data load with %s records" % '{:,}'.format(self.recordCount))
+        start_time = time.perf_counter()
 
         recordRemaining = int(self.recordCount)
         recordBlock = round(recordRemaining / int(self.loadThreadCount))
@@ -420,10 +426,12 @@ class dynamicInventory(object):
         for y in range(self.loadThreadCount):
             threadSet[y].join()
 
+        end_time = time.perf_counter()
         telemetry = {'control': 0}
         q.put(telemetry)
         statusThread.join()
         # templateThread.join()
+        print("Load completed in %s" % time.strftime("%H hours %M minutes %S seconds.", time.gmtime(end_time - start_time)))
         self.printStatusReset()
 
     def kvTest(self, testKey):
@@ -449,10 +457,13 @@ class dynamicInventory(object):
         for i in range(self.runThreadCount):
             threadSet.append(0)
 
-        statusThread = threading.Thread(target=self.printStatusThread, args=(q, int(self.recordCount), int(self.runThreadCount),))
+        statusThread = threading.Thread(target=self.printStatusThread, args=(q, int(self.operationCount), int(self.runThreadCount),))
         statusThread.start()
         # templateThread = threading.Thread(target=self.templateThread, args=(inputFileJson, int(self.recordCount) / int(self.batchSize), genq,))
         # templateThread.start()
+        print("Starting KV test using scenario \"%s\" with %s records - %d%% get, %d%% update"
+              % (testKey, '{:,}'.format(self.operationCount), 100 - self.writePercent, self.writePercent))
+        start_time = time.perf_counter()
 
         writeThreads = round((int(self.writePercent) / 100) * self.runThreadCount)
         readThreads = self.runThreadCount - writeThreads
@@ -479,10 +490,12 @@ class dynamicInventory(object):
         for y in range(self.runThreadCount):
             threadSet[y].join()
 
+        end_time = time.perf_counter()
         telemetry = {'control': 0}
         q.put(telemetry)
         statusThread.join()
         # templateThread.join()
+        print("Test completed in %s" % time.strftime("%H hours %M minutes %S seconds.", time.gmtime(end_time - start_time)))
         self.printStatusReset()
 
     def parse_args(self):
