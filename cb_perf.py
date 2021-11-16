@@ -17,6 +17,7 @@ import requests
 from datetime import datetime
 from statistics import mean
 import warnings
+import random
 from couchbase_core.items import Item, ItemOptionDict
 from couchbase_core._libcouchbase import LOCKMODE_EXC, LOCKMODE_NONE, LOCKMODE_WAIT
 from couchbase.cluster import Cluster, ClusterOptions
@@ -29,6 +30,7 @@ try:
 except ImportError:
     from queue import Queue, Empty
 import threading
+threadLock = threading.Lock()
 
 class atomicCounter(object):
     def __init__(self):
@@ -39,13 +41,298 @@ class atomicCounter(object):
         with self._lock:
             self.value += 1
 
-class dynamicInventory(object):
+class randomize(object):
+
+    def __init__(self):
+        self.streetNames = [
+            'Main',
+            'Church',
+            'Liberty',
+            'Park',
+            'Prospect',
+            'Pine',
+            'River',
+            'Elm',
+            'High',
+            'Union',
+            'Willow',
+            'Dogwood',
+            'New',
+            'North',
+            'South',
+            'East',
+            'West',
+            '1st',
+            '2nd',
+            '3rd',
+        ]
+        self.streetNameLast = len(self.streetNames) - 1
+        self.streetTypes = [
+            'Street',
+            'Road',
+            'Lane',
+            'Court',
+            'Avenue',
+            'Parkway',
+            'Trail',
+            'Way',
+            'Drive',
+        ]
+        self.streetTypeLast = len(self.streetTypes) - 1
+        self.cityNames = [
+            'Mannorburg',
+            'New Highworth',
+            'Salttown',
+            'Farmingchester',
+            'East Sagepool',
+            'Strongdol',
+            'Weirton',
+            'Hapwich',
+            'Lunfield Park',
+            'Cruxbury',
+            'Oakport',
+            'Chatham',
+            'Beachborough',
+            'Farmingbury Falls',
+            'Trinsdale',
+            'Wingview',
+        ]
+        self.cityNameLast = len(self.cityNames) - 1
+        self.stateNames = [
+            'AL',
+            'AK',
+            'AZ',
+            'AR',
+            'CA',
+            'CZ',
+            'CO',
+            'CT',
+            'DE',
+            'DC',
+            'FL',
+            'GA',
+            'GU',
+            'HI',
+            'ID',
+            'IL',
+            'IN',
+            'IA',
+            'KS',
+            'KY',
+            'LA',
+            'ME',
+            'MD',
+            'MA',
+            'MI',
+            'MN',
+            'MS',
+            'MO',
+            'MT',
+            'NE',
+            'NV',
+            'NH',
+            'NJ',
+            'NM',
+            'NY',
+            'NC',
+            'ND',
+            'OH',
+            'OK',
+            'OR',
+            'PA',
+            'PR',
+            'RI',
+            'SC',
+            'SD',
+            'TN',
+            'TX',
+            'UT',
+            'VT',
+            'VI',
+            'VA',
+            'WA',
+            'WV',
+            'WI',
+            'WY',
+        ]
+        self.stateNameLast = len(self.streetNames) - 1
+        self.firstNameList = [
+            'James',
+            'Robert',
+            'John',
+            'Michael',
+            'William',
+            'David',
+            'Richard',
+            'Joseph',
+            'Thomas',
+            'Charles',
+            'Mary',
+            'Patricia',
+            'Jennifer',
+            'Linda',
+            'Elizabeth',
+            'Barbara',
+            'Susan',
+            'Jessica',
+            'Sarah',
+            'Karen',
+        ]
+        self.firstNameLast = len(self.firstNameList) - 1
+        self.lastNameList = [
+            'Smith',
+            'Johnson',
+            'Williams',
+            'Brown',
+            'Jones',
+            'Garcia',
+            'Miller',
+            'Davis',
+            'Rodriguez',
+            'Martinez',
+            'Hernandez',
+            'Lopez',
+            'Gonzalez',
+            'Wilson',
+            'Anderson',
+            'Thomas',
+            'Taylor',
+            'Moore',
+            'Jackson',
+            'Martin',
+        ]
+        self.lastNameLast = len(self.lastNameList) - 1
+        self.nowTime = datetime.now()
+        self.datetimestr = self.nowTime.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _randomNumber(self, n):
+        min_lc = ord(b'0')
+        len_lc = 10
+        ba = bytearray(random.getrandbits(8) for i in range(n))
+        for i, b in enumerate(ba):
+            ba[i] = min_lc + b % len_lc
+        return ba.decode('utf-8')
+
+    def _randomStringLower(self, n):
+        min_lc = ord(b'a')
+        len_lc = 26
+        ba = bytearray(random.getrandbits(8) for i in range(n))
+        for i, b in enumerate(ba):
+            ba[i] = min_lc + b % len_lc
+        return ba.decode('utf-8')
+
+    def _randomStringUpper(self, n):
+        min_lc = ord(b'A')
+        len_lc = 26
+        ba = bytearray(random.getrandbits(8) for i in range(n))
+        for i, b in enumerate(ba):
+            ba[i] = min_lc + b % len_lc
+        return ba.decode('utf-8')
+
+    def _randomHash(self, n):
+        ba = bytearray(random.getrandbits(8) for i in range(n))
+        for i, b in enumerate(ba):
+            min_lc = ord(b'0') if b < 85 else ord(b'A') if b < 170 else ord(b'a')
+            len_lc = 10 if b < 85 else 26
+            ba[i] = min_lc + b % len_lc
+        return ba.decode('utf-8')
+
+    def creditCard(self):
+        return self._randomNumber(4) + '-' + self._randomNumber(4) + '-' + self._randomNumber(4) + '-' + self._randomNumber(4)
+
+    def socialSecurityNumber(self):
+        return self._randomNumber(3) + '-' + self._randomNumber(2) + '-' + self._randomNumber(4)
+
+    def threeDigits(self):
+        return self._randomNumber(3)
+
+    def fourDigits(self):
+        return self._randomNumber(4)
+
+    def zipCode(self):
+        return self._randomNumber(5)
+
+    def accountNumner(self):
+        return self._randomNumber(10)
+
+    def numericSequence(self):
+        return self._randomNumber(16)
+
+    def dollarAmount(self):
+        value = random.getrandbits(8) % 5 + 1
+        return self._randomNumber(value) + '.' + self._randomNumber(2)
+
+    def hashCode(self):
+        return self._randomHash(16)
+
+    def firstName(self):
+        value = random.getrandbits(8) % self.firstNameLast
+        return self.firstNameList[value]
+
+    def lastName(self):
+        value = random.getrandbits(8) % self.lastNameLast
+        return self.lastNameList[value]
+
+    def addressLine(self):
+        first_value = random.getrandbits(8) % self.streetNameLast
+        second_value = random.getrandbits(8) % self.streetTypeLast
+        return self._randomNumber(4) + ' ' + self.streetNames[first_value] + ' ' + self.streetTypes[second_value]
+
+    def cityName(self):
+        value = random.getrandbits(8) % self.cityNameLast
+        return self.cityNames[value]
+
+    def stateName(self):
+        value = random.getrandbits(8) % self.stateNameLast
+        return self.stateNames[value]
+
+    def dateCode(self):
+        return self.datetimestr
+
+    def prepareTemplate(self, json_block):
+        self.template = json.dumps(json_block)
+        self.compiled = Template(self.template)
+
+    def processTemplate(self):
+        creditcard = self.creditCard()
+        ssn = self.socialSecurityNumber()
+        randfour = self.fourDigits()
+        zipcode = self.zipCode()
+        randaccount = self.accountNumner()
+        randdollar = self.dollarAmount()
+        randid = self.numericSequence()
+        randhash = self.hashCode()
+        randaddress = self.addressLine()
+        randcity = self.cityName()
+        randstate = self.stateName()
+        randfirst = self.firstName()
+        randlast = self.lastName()
+        randdate = self.dateCode()
+
+        # template = json.dumps(json_block)
+        # t = Template(template)
+        formattedBlock = self.compiled.render(date_time=randdate, credit_card=creditcard, social=ssn, rand_four=randfour,
+                                  rand_account=randaccount, rand_id=randid, zip_code=zipcode, rand_dollar=randdollar,
+                                  rand_hash=randhash, rand_address=randaddress, rand_city=randcity, rand_state=randstate,
+                                  rand_first=randfirst, rand_last=randlast)
+        finished = formattedBlock.encode('ascii')
+        jsonBlock = json.loads(finished)
+        return jsonBlock
+
+class runPerformanceBenchmark(object):
 
     def __init__(self):
         self.out_thread = None
         self.err_thread = None
-        self.out_queue = Queue()
-        self.err_queue = Queue()
+        # self.out_queue = Queue()
+        # self.err_queue = Queue()
+        self.cpu_count = os.cpu_count()
+        self.randomize_queue = Queue()
+        self.randomize_control = Queue()
+        self.telemetry_queue = Queue()
+        self.telemetry_control = Queue()
+        self.randomize_thread_count = round(self.cpu_count / 2)
+        self.randomize_num_generated = 0
         self.counterLock = threading.Lock()
         self.recordId = 0
         self.currentOp = 0
@@ -133,14 +420,11 @@ class dynamicInventory(object):
             print("Can not get memory quota from the cluster.")
             sys.exit(1)
 
-    def asyncConnect(self):
+    def dataConnect(self):
         try:
-            cluster = acouchbase.cluster.Cluster("http://" + self.host + ":8091", authenticator=self.auth, lockmode=LOCKMODE_NONE)
+            cluster = Cluster("http://" + self.host + ":8091", authenticator=self.auth, lockmode=LOCKMODE_NONE)
             bucket = cluster._cluster.open_bucket(self.bucket, lockmode=LOCKMODE_NONE)
-            # bucket = cluster.bucket(self.bucket)
             return cluster, bucket
-            # self.asyncCollection = self.asyncBucket.scope("_default").collection("_default")
-            # self.upsertOpts = UpsertOptions(durability=ServerDurability(Durability.))
         except Exception as e:
             print("Can not connect to cluster: %s" % str(e))
             sys.exit(1)
@@ -162,33 +446,12 @@ class dynamicInventory(object):
                 print("Could not drop bucket: %s" % str(e))
                 sys.exit(1)
 
-    def _randomNumber(self, n):
-        min_lc = ord(b'0')
-        len_lc = 10
-        ba = bytearray(os.urandom(n))
-        for i, b in enumerate(ba):
-            ba[i] = min_lc + b % len_lc
-        return ba.decode('utf-8')
-
-    def _randomStringLower(self, n):
-        min_lc = ord(b'a')
-        len_lc = 26
-        ba = bytearray(os.urandom(n))
-        for i, b in enumerate(ba):
-            ba[i] = min_lc + b % len_lc
-        return ba.decode('utf-8')
-
-    def _randomStringUpper(self, n):
-        min_lc = ord(b'A')
-        len_lc = 26
-        ba = bytearray(os.urandom(n))
-        for i, b in enumerate(ba):
-            ba[i] = min_lc + b % len_lc
-        return ba.decode('utf-8')
-
-    def asyncInsert(self, q, jsonDoc, numRecords, startNum, thread):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    def documentInsert(self, numRecords, startNum, thread):
+        # r = randomize()
+        randomize_retry = 5
+        # q = self.randomize_queue
+        # loop = asyncio.new_event_loop()
+        # asyncio.set_event_loop(loop)
         telemetry = {
             'tps': 0,
             'ops': 0,
@@ -196,7 +459,7 @@ class dynamicInventory(object):
             'thread': thread,
         }
         try:
-            cluster, bucket = self.asyncConnect()
+            cluster, bucket = self.dataConnect()
             collection = bucket.scope("_default").collection("_default")
         except Exception as e:
             print("Error connecting to couchbase: %s" % str(e))
@@ -214,22 +477,37 @@ class dynamicInventory(object):
                 runBatchSize = self.batchSize
             numRemaining = numRemaining - runBatchSize
             batch = ItemOptionDict()
-            runJsonDoc = self.processTemplate(jsonDoc)
             for y in range(int(runBatchSize)):
+                while True:
+                    try:
+                        runJsonDoc = self.randomize_queue.get()
+                        break
+                    except Empty:
+                        if randomize_retry == 0:
+                            print("Timeout waiting for transformed JSON document.")
+                            sys.exit(1)
+                        randomize_retry -= 1
+                        time.sleep(0.05)
+                        pass
+                randomize_retry = 5
                 item = Item(str(format(counter, '032')), runJsonDoc)
                 counter += 1
                 # batch = ItemOptionDict()
                 batch.add(item)
             begin_time = time.perf_counter()
-            loop.run_until_complete(collection.upsert_multi(batch))
+            try:
+                collection.upsert_multi(batch)
+            except Exception as e:
+                print("Error inserting into couchbase: %s" % str(e))
+                sys.exit(1)
             end_time = time.perf_counter()
             time_delta = end_time - begin_time
             transPerSec = runBatchSize / time_delta
             telemetry['tps'] = transPerSec
             telemetry['ops'] = runBatchSize
             telemetry['time'] = time_delta
-            q.put(telemetry)
-        loop.close()
+            self.telemetry_queue.put(telemetry)
+        # loop.close()
 
     def asyncRead(self, q, numRecords, startNum, thread):
         loop = asyncio.new_event_loop()
@@ -289,7 +567,7 @@ class dynamicInventory(object):
         finally:
             loop.close()
 
-    def printStatusThread(self, q, count, threads):
+    def printStatusThread(self, count, threads):
         threadVector = [0 for i in range(threads)]
         totalTps = 0
         averageTps = 0
@@ -300,9 +578,11 @@ class dynamicInventory(object):
         sampleCount = 1
         time_per_record = 0
         trans_per_sec = 0
+        debug_string = ""
+
         while True:
-            while not q.empty():
-                entry = q.get()
+            while not self.telemetry_queue.empty():
+                entry = self.telemetry_queue.get()
                 # print(json.dumps(entry))
                 if 'control' in entry:
                     if entry['control'] == 0:
@@ -312,6 +592,9 @@ class dynamicInventory(object):
                         print("%.6f average time." % averageTime)
                         print("%.6f maximum time." % maxTime)
                         return
+                if 'randomize' in entry:
+                    debug_string = 'Debug: rand queue %d created %d' % (entry['queue'], entry['created'])
+                    continue
                 self.currentOp += entry['ops']
                 time_delta = entry['time']
                 reporting_thread = entry['thread']
@@ -331,48 +614,72 @@ class dynamicInventory(object):
                         maxTime = time_per_record
                 self.percentage = (self.currentOp / count) * 100
                 end_char = '\r'
-                print("Document %d of %d in progress, %.6f time, %.0f TPS, %d%% completed ... " %
-                      (self.currentOp, count, time_per_record, trans_per_sec, self.percentage), end=end_char)
+                print("Document %d of %d in progress, %.6f time, %.0f TPS, %d%% completed %s" %
+                      (self.currentOp, count, time_per_record, trans_per_sec, self.percentage, debug_string), end=end_char)
             time.sleep(1)
 
     def printStatusReset(self):
         self.currentOp = 0
         self.percentage = 0
 
-    def processTemplate(self, json_block):
-        template = json.dumps(json_block)
-        t = Template(template)
-        nowTime = datetime.now()
-        datetimestr = nowTime.strftime("%Y-%m-%d %H:%M:%S")
-        creditcard = self._randomNumber(4) + '-' + self._randomNumber(4) + '-' + self._randomNumber(4) + '-' + self._randomNumber(4)
-        ssn = self._randomNumber(3) + '-' + self._randomNumber(2) + '-' + self._randomNumber(4)
-        randfour = self._randomNumber(4)
-        zipcode = self._randomNumber(5)
-        randten = self._randomNumber(10)
-        randdollar = self._randomNumber(4) + '.' + self._randomNumber(2)
-        randstring = self._randomStringLower(16)
-        formattedBlock = t.render(date_time=datetimestr, credit_card=creditcard, social=ssn, rand_four=randfour,
-                              rand_ten=randten, rand_string=randstring, zip_code=zipcode, rand_dollar=randdollar)
-        finished = formattedBlock.encode('ascii')
-        jsonBlock = json.loads(finished)
-        return jsonBlock
-
-    def templateThread(self, json_block, count, q):
+    def randomizeThread(self, thread_num, json_block, count):
         retries = 1
-        for x in range(int(round(count)+1)):
-            # while q.qsize() > 1000:
-            #     time.sleep(0.005 * float(retries))
-            #     retries += 1
-            jsonDoc = self.processTemplate(json_block)
-            q.put(jsonDoc)
+        thread = int(thread_num) + 1
+        telemetry = {
+            'randomize': 1,
+            'queue': 0,
+            'created': 0,
+            'thread': thread,
+        }
+
+        try:
+            r = randomize()
+            r.prepareTemplate(json_block)
+        except Exception as e:
+            print("Can not load JSON template: %s." % str(e))
+            sys.exit(1)
+
+        if self.debug:
+            print("Randomize thread %d starting." % thread)
+        while self.randomize_num_generated < count:
+            if not self.randomize_control.empty():
+                telemetry = self.randomize_control.get()
+                if 'control' in telemetry:
+                    if telemetry['control'] == 0:
+                        if self.debug:
+                            print("Randomize thread %d shutdown requested. Current queue size is %d." % (thread,
+                                                                                                         self.randomize_queue.qsize()))
+                        return
+            while self.randomize_queue.qsize() > 1000:
+                if self.debug:
+                    print("Reached randomize limit, sleeping.")
+                time.sleep(0.05 * float(retries))
+                retries += 1
+            try:
+                jsonDoc = r.processTemplate()
+            except Exception as e:
+                print("Can not randomize JSON template: %s." % str(e))
+                sys.exit(1)
+            self.randomize_queue.put(jsonDoc)
+            with threadLock:
+                self.randomize_num_generated += 1
+            # print(self.randomize_queue.qsize())
             retries = 1
+            if self.debug:
+                telemetry['queue'] = self.randomize_queue.qsize()
+                telemetry['created'] = self.randomize_num_generated
+                self.telemetry_queue.put(telemetry)
+
+        if self.debug:
+            print("Randomize thread %d complete. Exiting." % thread)
 
     def dataLoad(self):
         inputFileJson = {}
         threadSet = []
         threadStat = []
+        templateThread = []
         q = Queue()
-        genq = Queue()
+        # genq = Queue()
         recordBlock = 0
         recordRemaining = 0
         # counter = atomicCounter()
@@ -398,10 +705,12 @@ class dynamicInventory(object):
 
         # self.asyncConnect()
 
-        statusThread = threading.Thread(target=self.printStatusThread, args=(q, int(self.recordCount), int(self.loadThreadCount),))
+        statusThread = threading.Thread(target=self.printStatusThread, args=(int(self.recordCount), int(self.loadThreadCount),))
         statusThread.start()
-        # templateThread = threading.Thread(target=self.templateThread, args=(inputFileJson, int(self.recordCount) / int(self.batchSize), genq,))
-        # templateThread.start()
+        for randomize_thread in range(self.randomize_thread_count):
+            templateThreadRun = threading.Thread(target=self.randomizeThread, args=(randomize_thread, inputFileJson, int(self.recordCount),))
+            templateThreadRun.start()
+            templateThread.append(templateThreadRun)
         print("Starting data load with %s records" % '{:,}'.format(self.recordCount))
         start_time = time.perf_counter()
 
@@ -419,7 +728,7 @@ class dynamicInventory(object):
                 recordRemaining = recordRemaining - numRecords
                 # q.put(self.currentOp)
                 # digits = int(math.log10(recordBlock)) + 1
-                threadSet[x] = threading.Thread(target=self.asyncInsert, args=(q, inputFileJson, numRecords, recordStart, x,))
+                threadSet[x] = threading.Thread(target=self.documentInsert, args=(numRecords, recordStart, x,))
                 threadSet[x].start()
                 recordStart = recordStart + numRecords
 
@@ -428,9 +737,11 @@ class dynamicInventory(object):
 
         end_time = time.perf_counter()
         telemetry = {'control': 0}
-        q.put(telemetry)
+        self.telemetry_queue.put(telemetry)
         statusThread.join()
-        # templateThread.join()
+        for randomize_thread in range(self.randomize_thread_count):
+            self.randomize_control.put(telemetry)
+            templateThread[randomize_thread].join()
         print("Load completed in %s" % time.strftime("%H hours %M minutes %S seconds.", time.gmtime(end_time - start_time)))
         self.printStatusReset()
 
@@ -519,6 +830,7 @@ class dynamicInventory(object):
         parser.add_argument('--run', action='store_true')
         parser.add_argument('--makebucket', action='store_true')
         parser.add_argument('--dropbucket', action='store_true')
+        parser.add_argument('--debug', action='store_true')
         self.args = parser.parse_args()
         self.username = self.args.user if self.args.user else "Administrator"
         self.password = self.args.password if self.args.password else "password"
@@ -539,9 +851,10 @@ class dynamicInventory(object):
         self.runOnly = self.args.run
         self.makeBucketOnly = self.args.makebucket
         self.dropBucketOnly = self.args.dropbucket
+        self.debug = self.args.debug
 
 def main():
-    dynamicInventory()
+    runPerformanceBenchmark()
 
 if __name__ == '__main__':
 
