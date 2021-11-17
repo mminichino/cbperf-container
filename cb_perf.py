@@ -446,8 +446,10 @@ class runPerformanceBenchmark(object):
                 print("Could not drop bucket: %s" % str(e))
                 sys.exit(1)
 
-    def documentInsert(self, numRecords, startNum, thread):
+    def documentInsert(self, numRecords, startNum, thread, randomFlag=False):
         randomize_retry = 0
+        loop_average_tps = 0
+        loop_average_time = 0
         runJsonDoc = {}
         telemetry = {
             'type': 0,
@@ -477,32 +479,51 @@ class runPerformanceBenchmark(object):
             numRemaining = numRemaining - runBatchSize
             batch = ItemOptionDict()
             for y in range(int(runBatchSize)):
+                loop_average_time = 0
+                loop_total_time = 0
+                loop_average_tps = 0
+                loop_total_tps = 0
+                loop_count = 1
                 try:
                     runJsonDoc = self.randomize_queue.get()
                 except Exception as e:
                     print("Error getting JSON document from queue: %s." % str(e))
                     sys.exit(1)
-                item = Item(str(format(counter, '032')), runJsonDoc)
+                # item = Item(str(format(counter, '032')), runJsonDoc)
+                # counter += 1
+                # batch.add(item)
+                if randomFlag:
+                    run_key = random.getrandbits(8) % numRecords
+                    run_key + startNum
+                else:
+                    run_key = counter
+                begin_time = time.perf_counter()
+                try:
+                    collection.upsert(str(format(run_key, '032')), runJsonDoc)
+                except Exception as e:
+                    print("Error inserting into couchbase: %s" % str(e))
+                    sys.exit(1)
+                end_time = time.perf_counter()
                 counter += 1
-                batch.add(item)
-            begin_time = time.perf_counter()
-            try:
-                collection.upsert_multi(batch)
-            except Exception as e:
-                print("Error inserting into couchbase: %s" % str(e))
-                sys.exit(1)
-            end_time = time.perf_counter()
-            time_delta = end_time - begin_time
-            transPerSec = runBatchSize / time_delta
-            telemetry['tps'] = transPerSec
+                loop_time_delta = end_time - begin_time
+                loop_run_average_tps = 1 / loop_time_delta
+                loop_total_tps = loop_total_tps + loop_run_average_tps
+                loop_average_tps = loop_total_tps / loop_count
+                loop_total_time = loop_total_time + loop_time_delta
+                loop_average_time = loop_total_time / loop_count
+                loop_count += 1
+            # transPerSec = runBatchSize / time_delta
+            telemetry['tps'] = loop_average_tps
             telemetry['ops'] = runBatchSize
-            telemetry['time'] = time_delta
+            telemetry['time'] = loop_average_time
             self.telemetry_queue.put(telemetry)
 
         if self.debug:
             print("Insert thread %d complete, exiting." % thread)
 
-    def documentRead(self, numRecords, startNum, thread):
+    def documentRead(self, numRecords, startNum, thread, randomFlag=False):
+        loop_average_tps = 0
+        loop_average_time = 0
         telemetry = {
             'type': 0,
             'tps': 0,
@@ -531,16 +552,37 @@ class runPerformanceBenchmark(object):
             numRemaining = numRemaining - runBatchSize
             batch = []
             for y in range(int(runBatchSize)):
-                batch.append(str(format(counter, '032')))
+                loop_average_time = 0
+                loop_total_time = 0
+                loop_average_tps = 0
+                loop_total_tps = 0
+                loop_count = 1
+                # batch.append(str(format(counter, '032')))
+                if randomFlag:
+                    run_key = random.getrandbits(8) % numRecords
+                    run_key + startNum
+                else:
+                    run_key = counter
+                begin_time = time.perf_counter()
+                try:
+                    collection.get(str(format(run_key, '032')))
+                except Exception as e:
+                    print("Error reading from couchbase: %s" % str(e))
+                    sys.exit(1)
+                end_time = time.perf_counter()
                 counter += 1
-            begin_time = time.perf_counter()
-            collection.get_multi(batch)
-            end_time = time.perf_counter()
-            time_delta = end_time - begin_time
-            transPerSec = runBatchSize / time_delta
-            telemetry['tps'] = transPerSec
+                loop_time_delta = end_time - begin_time
+                loop_run_average_tps = 1 / loop_time_delta
+                loop_total_tps = loop_total_tps + loop_run_average_tps
+                loop_average_tps = loop_total_tps / loop_count
+                loop_total_time = loop_total_time + loop_time_delta
+                loop_average_time = loop_total_time / loop_count
+                loop_count += 1
+            # time_delta = end_time - begin_time
+            # transPerSec = runBatchSize / time_delta
+            telemetry['tps'] = loop_average_tps
             telemetry['ops'] = runBatchSize
-            telemetry['time'] = time_delta
+            telemetry['time'] = loop_average_time
             self.telemetry_queue.put(telemetry)
 
         if self.debug:
@@ -807,6 +849,7 @@ class runPerformanceBenchmark(object):
         parser.add_argument('--makebucket', action='store_true')
         parser.add_argument('--dropbucket', action='store_true')
         parser.add_argument('--debug', action='store_true')
+        parser.add_argument('--random', action='store_true')
         self.args = parser.parse_args()
         self.username = self.args.user if self.args.user else "Administrator"
         self.password = self.args.password if self.args.password else "password"
@@ -828,6 +871,7 @@ class runPerformanceBenchmark(object):
         self.makeBucketOnly = self.args.makebucket
         self.dropBucketOnly = self.args.dropbucket
         self.debug = self.args.debug
+        self.randomFlag = self.args.random
 
 def main():
     runPerformanceBenchmark()
