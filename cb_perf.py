@@ -447,30 +447,29 @@ class runPerformanceBenchmark(object):
                 sys.exit(1)
 
     def documentInsert(self, numRecords, startNum, thread):
-        # r = randomize()
-        randomize_retry = 5
-        # q = self.randomize_queue
-        # loop = asyncio.new_event_loop()
-        # asyncio.set_event_loop(loop)
+        randomize_retry = 0
+        runJsonDoc = {}
         telemetry = {
+            'type': 0,
             'tps': 0,
             'ops': 0,
             'time': 0,
             'thread': thread,
         }
+
         try:
             cluster, bucket = self.dataConnect()
             collection = bucket.scope("_default").collection("_default")
         except Exception as e:
-            print("Error connecting to couchbase: %s" % str(e))
+            print("documentInsert: error connecting to couchbase: %s" % str(e))
             sys.exit(1)
+
+        if self.debug:
+            print("Insert thread %d connected to cluster, starting test with %d records." % (thread, numRecords))
 
         numRemaining = numRecords
         counter = int(startNum)
         while numRemaining > 0:
-            # counter.increment()
-            # recordId = math.pow(10, counter) + x
-            # q.put(x)
             if numRemaining <= self.batchSize:
                 runBatchSize = numRemaining
             else:
@@ -478,21 +477,13 @@ class runPerformanceBenchmark(object):
             numRemaining = numRemaining - runBatchSize
             batch = ItemOptionDict()
             for y in range(int(runBatchSize)):
-                while True:
-                    try:
-                        runJsonDoc = self.randomize_queue.get()
-                        break
-                    except Empty:
-                        if randomize_retry == 0:
-                            print("Timeout waiting for transformed JSON document.")
-                            sys.exit(1)
-                        randomize_retry -= 1
-                        time.sleep(0.05)
-                        pass
-                randomize_retry = 5
+                try:
+                    runJsonDoc = self.randomize_queue.get()
+                except Exception as e:
+                    print("Error getting JSON document from queue: %s." % str(e))
+                    sys.exit(1)
                 item = Item(str(format(counter, '032')), runJsonDoc)
                 counter += 1
-                # batch = ItemOptionDict()
                 batch.add(item)
             begin_time = time.perf_counter()
             try:
@@ -507,30 +498,32 @@ class runPerformanceBenchmark(object):
             telemetry['ops'] = runBatchSize
             telemetry['time'] = time_delta
             self.telemetry_queue.put(telemetry)
-        # loop.close()
 
-    def asyncRead(self, q, numRecords, startNum, thread):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        if self.debug:
+            print("Insert thread %d complete, exiting." % thread)
+
+    def documentRead(self, numRecords, startNum, thread):
         telemetry = {
+            'type': 0,
             'tps': 0,
             'ops': 0,
             'time': 0,
             'thread': thread,
         }
+
         try:
-            cluster, bucket = self.asyncConnect()
+            cluster, bucket = self.dataConnect()
             collection = bucket.scope("_default").collection("_default")
         except Exception as e:
-            print("asyncRead: error connecting to couchbase: %s" % str(e))
+            print("documentRead: error connecting to couchbase: %s" % str(e))
             sys.exit(1)
+
+        if self.debug:
+            print("Read thread %d connected, starting test for %d records starting at %d." % (thread, numRecords, startNum))
 
         numRemaining = numRecords
         counter = int(startNum)
         while numRemaining > 0:
-            # counter.increment()
-            # recordId = math.pow(10, counter) + x
-            # q.put(x)
             if numRemaining <= self.batchSize:
                 runBatchSize = numRemaining
             else:
@@ -541,15 +534,17 @@ class runPerformanceBenchmark(object):
                 batch.append(str(format(counter, '032')))
                 counter += 1
             begin_time = time.perf_counter()
-            loop.run_until_complete(collection.get_multi(batch))
+            collection.get_multi(batch)
             end_time = time.perf_counter()
             time_delta = end_time - begin_time
             transPerSec = runBatchSize / time_delta
             telemetry['tps'] = transPerSec
             telemetry['ops'] = runBatchSize
             telemetry['time'] = time_delta
-            q.put(telemetry)
-        loop.close()
+            self.telemetry_queue.put(telemetry)
+
+        if self.debug:
+            print("Read thread %d complete, exiting." % thread)
 
     def insertDocuments(self, q, jsonDoc, numRecords, startNum):
         loop = asyncio.new_event_loop()
@@ -570,6 +565,7 @@ class runPerformanceBenchmark(object):
     def printStatusThread(self, count, threads):
         threadVector = [0 for i in range(threads)]
         totalTps = 0
+        totalOps = 0
         averageTps = 0
         maxTps = 0
         totalTime = 0
@@ -578,59 +574,51 @@ class runPerformanceBenchmark(object):
         sampleCount = 1
         time_per_record = 0
         trans_per_sec = 0
+        start_shutdown = False
         debug_string = ""
+        cycle = 1
 
         while True:
-            while not self.telemetry_queue.empty():
-                entry = self.telemetry_queue.get()
-                # print(json.dumps(entry))
-                if 'control' in entry:
-                    if entry['control'] == 0:
-                        sys.stdout.write("\rOperation Complete.\033[K\n")
-                        print("%d average TPS." % averageTps)
-                        print("%d maximum TPS." % maxTps)
-                        print("%.6f average time." % averageTime)
-                        print("%.6f maximum time." % maxTime)
-                        return
-                if 'randomize' in entry:
-                    debug_string = 'Debug: rand queue %d created %d' % (entry['queue'], entry['created'])
-                    continue
-                self.currentOp += entry['ops']
+            entry = self.telemetry_queue.get()
+            if entry['type'] == 0:
+                totalOps += entry['ops']
                 time_delta = entry['time']
                 reporting_thread = entry['thread']
                 threadVector[reporting_thread] = entry['tps']
-                # trans_per_sec = sum(threadVector)
-                if all([v != 0 for v in threadVector]):
-                    trans_per_sec = mean(threadVector) * len(threadVector)
-                    totalTps = totalTps + trans_per_sec
-                    time_per_record = time_delta / entry['ops']
-                    totalTime = totalTime + time_per_record
-                    averageTps = totalTps / sampleCount
-                    averageTime = totalTime / sampleCount
-                    sampleCount += 1
-                    if trans_per_sec > maxTps:
-                        maxTps = trans_per_sec
-                    if time_per_record > maxTime:
-                        maxTime = time_per_record
-                self.percentage = (self.currentOp / count) * 100
+                trans_per_sec = sum(threadVector)
+                totalTps = totalTps + trans_per_sec
+                time_per_record = time_delta / entry['ops']
+                totalTime = totalTime + time_per_record
+                averageTps = totalTps / sampleCount
+                averageTime = totalTime / sampleCount
+                sampleCount += 1
+                if trans_per_sec > maxTps:
+                    maxTps = trans_per_sec
+                if time_per_record > maxTime:
+                    maxTime = time_per_record
+                self.percentage = (totalOps / count) * 100
                 end_char = '\r'
                 print("Document %d of %d in progress, %.6f time, %.0f TPS, %d%% completed %s" %
-                      (self.currentOp, count, time_per_record, trans_per_sec, self.percentage, debug_string), end=end_char)
-            time.sleep(1)
+                      (totalOps, count, time_per_record, trans_per_sec, self.percentage, debug_string), end=end_char)
+            if entry['type'] == 2:
+                if entry['control'] == 0:
+                    sys.stdout.write("\033[K")
+                    print("Document %d of %d, %d%% complete." % (totalOps, count, self.percentage))
+                    print("Test Done.")
+                    print("%d average TPS." % averageTps)
+                    print("%d maximum TPS." % maxTps)
+                    print("%.6f average time." % averageTime)
+                    print("%.6f maximum time." % maxTime)
+                    return
 
-    def printStatusReset(self):
+    def runReset(self):
         self.currentOp = 0
         self.percentage = 0
+        self.randomize_num_generated = 0
 
     def randomizeThread(self, thread_num, json_block, count):
         retries = 1
         thread = int(thread_num) + 1
-        telemetry = {
-            'randomize': 1,
-            'queue': 0,
-            'created': 0,
-            'thread': thread,
-        }
 
         try:
             r = randomize()
@@ -640,21 +628,9 @@ class runPerformanceBenchmark(object):
             sys.exit(1)
 
         if self.debug:
-            print("Randomize thread %d starting." % thread)
+            print("Randomize thread %d starting with count %d." % (thread, count))
+
         while self.randomize_num_generated < count:
-            if not self.randomize_control.empty():
-                telemetry = self.randomize_control.get()
-                if 'control' in telemetry:
-                    if telemetry['control'] == 0:
-                        if self.debug:
-                            print("Randomize thread %d shutdown requested. Current queue size is %d." % (thread,
-                                                                                                         self.randomize_queue.qsize()))
-                        return
-            while self.randomize_queue.qsize() > 1000:
-                if self.debug:
-                    print("Reached randomize limit, sleeping.")
-                time.sleep(0.05 * float(retries))
-                retries += 1
             try:
                 jsonDoc = r.processTemplate()
             except Exception as e:
@@ -663,12 +639,6 @@ class runPerformanceBenchmark(object):
             self.randomize_queue.put(jsonDoc)
             with threadLock:
                 self.randomize_num_generated += 1
-            # print(self.randomize_queue.qsize())
-            retries = 1
-            if self.debug:
-                telemetry['queue'] = self.randomize_queue.qsize()
-                telemetry['created'] = self.randomize_num_generated
-                self.telemetry_queue.put(telemetry)
 
         if self.debug:
             print("Randomize thread %d complete. Exiting." % thread)
@@ -677,12 +647,10 @@ class runPerformanceBenchmark(object):
         inputFileJson = {}
         threadSet = []
         threadStat = []
-        templateThread = []
-        q = Queue()
-        # genq = Queue()
+        randomizeThread = []
         recordBlock = 0
         recordRemaining = 0
-        # counter = atomicCounter()
+
         try:
             with open(self.inputFile, 'r') as inputFile:
                 inputFileData = inputFile.read()
@@ -703,14 +671,12 @@ class runPerformanceBenchmark(object):
             threadStat.append(0)
             threadSet.append(0)
 
-        # self.asyncConnect()
-
         statusThread = threading.Thread(target=self.printStatusThread, args=(int(self.recordCount), int(self.loadThreadCount),))
         statusThread.start()
         for randomize_thread in range(self.randomize_thread_count):
-            templateThreadRun = threading.Thread(target=self.randomizeThread, args=(randomize_thread, inputFileJson, int(self.recordCount),))
-            templateThreadRun.start()
-            templateThread.append(templateThreadRun)
+            randomizeThreadRun = threading.Thread(target=self.randomizeThread, args=(randomize_thread, inputFileJson, int(self.recordCount),))
+            randomizeThreadRun.start()
+            randomizeThread.append(randomizeThreadRun)
         print("Starting data load with %s records" % '{:,}'.format(self.recordCount))
         start_time = time.perf_counter()
 
@@ -726,8 +692,6 @@ class runPerformanceBenchmark(object):
                 else:
                     break
                 recordRemaining = recordRemaining - numRecords
-                # q.put(self.currentOp)
-                # digits = int(math.log10(recordBlock)) + 1
                 threadSet[x] = threading.Thread(target=self.documentInsert, args=(numRecords, recordStart, x,))
                 threadSet[x].start()
                 recordStart = recordStart + numRecords
@@ -736,19 +700,21 @@ class runPerformanceBenchmark(object):
             threadSet[y].join()
 
         end_time = time.perf_counter()
-        telemetry = {'control': 0}
+        telemetry = {
+            'type': 2,
+            'control': 0,
+        }
         self.telemetry_queue.put(telemetry)
         statusThread.join()
         for randomize_thread in range(self.randomize_thread_count):
-            self.randomize_control.put(telemetry)
-            templateThread[randomize_thread].join()
+            randomizeThread[randomize_thread].join()
         print("Load completed in %s" % time.strftime("%H hours %M minutes %S seconds.", time.gmtime(end_time - start_time)))
-        self.printStatusReset()
+        self.runReset()
 
     def kvTest(self, testKey):
         inputFileJson = {}
         threadSet = []
-        q = Queue()
+        randomizeThread = []
 
         try:
             with open(self.inputFile, 'r') as inputFile:
@@ -758,7 +724,8 @@ class runPerformanceBenchmark(object):
             print("Can not open input file: %s" % str(e))
             sys.exit(1)
 
-        inputFileData = re.compile('ISODate\(("[^"]+")\)').sub('\\1', inputFileData)
+        # inputFileData = re.compile('ISODate\(("[^"]+")\)').sub('\\1', inputFileData)
+
         try:
             inputFileJson = json.loads(inputFileData)
         except Exception as e:
@@ -768,20 +735,25 @@ class runPerformanceBenchmark(object):
         for i in range(self.runThreadCount):
             threadSet.append(0)
 
-        statusThread = threading.Thread(target=self.printStatusThread, args=(q, int(self.operationCount), int(self.runThreadCount),))
-        statusThread.start()
-        # templateThread = threading.Thread(target=self.templateThread, args=(inputFileJson, int(self.recordCount) / int(self.batchSize), genq,))
-        # templateThread.start()
-        print("Starting KV test using scenario \"%s\" with %s records - %d%% get, %d%% update"
-              % (testKey, '{:,}'.format(self.operationCount), 100 - self.writePercent, self.writePercent))
-        start_time = time.perf_counter()
-
         writeThreads = round((int(self.writePercent) / 100) * self.runThreadCount)
-        readThreads = self.runThreadCount - writeThreads
         recordRemaining = int(self.operationCount)
         recordBlock = round(recordRemaining / int(self.runThreadCount))
         recordBlock = recordBlock if recordBlock >= 1 else 1
         recordStart = 1
+        writeOperationCount = recordBlock * writeThreads
+
+        statusThread = threading.Thread(target=self.printStatusThread, args=(int(self.operationCount), int(self.runThreadCount),))
+        statusThread.start()
+
+        for randomize_thread in range(self.randomize_thread_count):
+            randomizeThreadRun = threading.Thread(target=self.randomizeThread, args=(randomize_thread, inputFileJson, int(writeOperationCount),))
+            randomizeThreadRun.start()
+            randomizeThread.append(randomizeThreadRun)
+
+        print("Starting KV test using scenario \"%s\" with %s records - %d%% get, %d%% update"
+              % (testKey, '{:,}'.format(self.operationCount), 100 - self.writePercent, self.writePercent))
+        start_time = time.perf_counter()
+
         for x in range(self.runThreadCount):
                 if recordRemaining < recordBlock:
                     numRecords = recordRemaining
@@ -791,10 +763,10 @@ class runPerformanceBenchmark(object):
                     break
                 recordRemaining = recordRemaining - numRecords
                 if writeThreads > 0:
-                    threadSet[x] = threading.Thread(target=self.asyncInsert, args=(q, inputFileJson, numRecords, recordStart, x,))
+                    threadSet[x] = threading.Thread(target=self.documentInsert, args=(numRecords, recordStart, x,))
                     writeThreads -= 1
                 else:
-                    threadSet[x] = threading.Thread(target=self.asyncRead, args=(q, numRecords, recordStart, x,))
+                    threadSet[x] = threading.Thread(target=self.documentRead, args=(numRecords, recordStart, x,))
                 threadSet[x].start()
                 recordStart = recordStart + numRecords
 
@@ -802,12 +774,16 @@ class runPerformanceBenchmark(object):
             threadSet[y].join()
 
         end_time = time.perf_counter()
-        telemetry = {'control': 0}
-        q.put(telemetry)
+        telemetry = {
+            'type': 2,
+            'control': 0,
+        }
+        self.telemetry_queue.put(telemetry)
         statusThread.join()
-        # templateThread.join()
+        for randomize_thread in range(self.randomize_thread_count):
+            randomizeThread[randomize_thread].join()
         print("Test completed in %s" % time.strftime("%H hours %M minutes %S seconds.", time.gmtime(end_time - start_time)))
-        self.printStatusReset()
+        self.runReset()
 
     def parse_args(self):
         parser = argparse.ArgumentParser()
