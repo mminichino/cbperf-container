@@ -361,6 +361,8 @@ class runPerformanceBenchmark(object):
             if not self.inputFile:
                 print("Please provide a source JSON file with the file parameter.")
                 sys.exit(1)
+            if not self._bucketExists(self.bucket):
+                self.createBucket()
             self.dataLoad()
             if self.loadOnly:
                 sys.exit(0)
@@ -368,6 +370,9 @@ class runPerformanceBenchmark(object):
         if not self.manualMode or self.runOnly:
             if not self.inputFile:
                 print("Please provide a source JSON file with the file parameter.")
+                sys.exit(1)
+            if not self._bucketExists(self.bucket):
+                print("Please create the pillowfight bucket first.")
                 sys.exit(1)
             for key in self.scenarioWrite:
                 if self.runWorkload:
@@ -757,6 +762,7 @@ class runPerformanceBenchmark(object):
         inputFileJson = {}
         threadSet = []
         randomizeThread = []
+        randomFlag=self.randomFlag
 
         try:
             with open(self.inputFile, 'r') as inputFile:
@@ -805,10 +811,10 @@ class runPerformanceBenchmark(object):
                     break
                 recordRemaining = recordRemaining - numRecords
                 if writeThreads > 0:
-                    threadSet[x] = threading.Thread(target=self.documentInsert, args=(numRecords, recordStart, x,))
+                    threadSet[x] = threading.Thread(target=self.documentInsert, args=(numRecords, recordStart, x, randomFlag,))
                     writeThreads -= 1
                 else:
-                    threadSet[x] = threading.Thread(target=self.documentRead, args=(numRecords, recordStart, x,))
+                    threadSet[x] = threading.Thread(target=self.documentRead, args=(numRecords, recordStart, x, randomFlag,))
                 threadSet[x].start()
                 recordStart = recordStart + numRecords
 
