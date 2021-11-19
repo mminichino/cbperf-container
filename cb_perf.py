@@ -421,7 +421,9 @@ class runPerformanceBenchmark(object):
         }
         self.parse_args()
         self.clusterConnect()
-        self.indexName = 'ix1'
+        self.fieldIndex = self.bucket + '_ix1'
+        self.idIndex = self.bucket + '_id_ix1'
+        self.keyArray = []
 
         warnings.filterwarnings("ignore")
 
@@ -431,11 +433,6 @@ class runPerformanceBenchmark(object):
         if not self.manualMode or self.makeBucketOnly:
             self.createBucket()
             if self.makeBucketOnly:
-                sys.exit(0)
-
-        if not self.manualMode or self.createIndexFlag:
-            self.createIndex()
-            if self.createIndexFlag:
                 sys.exit(0)
 
         if not self.manualMode or self.loadOnly:
@@ -448,9 +445,16 @@ class runPerformanceBenchmark(object):
             if self.loadOnly:
                 sys.exit(0)
 
+        if not self.manualMode or self.createIndexFlag:
+            self.createIndex(self.queryField, self.fieldIndex)
+            self.createIndex(self.idField, self.idIndex)
+            if self.createIndexFlag:
+                sys.exit(0)
+
         if (not self.manualMode and self.queryField) or (self.queryField and self.runOnly):
-            if not self._indexExists(self.indexName):
-                self.createIndex()
+            if not self._indexExists(self.fieldIndex) or not self._indexExists(self.idIndex):
+                self.createIndex(self.queryField, self.fieldIndex)
+                self.createIndex(self.idField, self.idIndex)
             for key in self.scenarioWrite:
                 if self.runWorkload:
                     if self.runWorkload != key:
@@ -477,7 +481,8 @@ class runPerformanceBenchmark(object):
                 sys.exit(0)
 
         if not self.manualMode or self.dropIndexFlag:
-            self.dropIndex()
+            self.dropIndex(self.fieldIndex)
+            self.dropIndex(self.idIndex)
             if self.dropIndexFlag:
                 sys.exit(0)
 
@@ -538,8 +543,8 @@ class runPerformanceBenchmark(object):
 
     def dataConnect(self):
         try:
-            cluster = Cluster("http://" + self.host + ":8091", authenticator=self.auth, lockmode=LOCKMODE_WAIT)
-            bucket = cluster._cluster.open_bucket(self.bucket, lockmode=LOCKMODE_WAIT)
+            cluster = Cluster("http://" + self.host + ":8091", authenticator=self.auth, lockmode=2)
+            bucket = cluster.bucket(self.bucket)
             return cluster, bucket
         except Exception as e:
             print("Can not connect to cluster: %s" % str(e))
@@ -562,10 +567,11 @@ class runPerformanceBenchmark(object):
                 print("Could not drop bucket: %s" % str(e))
                 sys.exit(1)
 
-    def createIndex(self):
-        fieldName = self.queryField
-        queryText = 'CREATE INDEX ix1 ON pillowfight(' + fieldName + ');'
-        if self._bucketExists(self.bucket) and not self._indexExists(self.indexName):
+    def createIndex(self, field, index):
+        if self.debug:
+            print("createIndex: creating index %s on field %s." % (index, field))
+        queryText = 'CREATE INDEX ' + index + ' ON pillowfight(' + field + ');'
+        if self._bucketExists(self.bucket) and not self._indexExists(index):
             try:
                 cluster, bucket = self.dataConnect()
                 collection = bucket.scope("_default").collection("_default")
@@ -583,9 +589,11 @@ class runPerformanceBenchmark(object):
             run_time = run_time / 1000000
             print("Create index execution time: %f secs" % run_time)
 
-    def dropIndex(self):
-        queryText = 'DROP INDEX ix1 ON pillowfight USING GSI;'
-        if self._bucketExists(self.bucket) and self._indexExists(self.indexName):
+    def dropIndex(self, index):
+        if self.debug:
+            print("Dropping index %s.", index)
+        queryText = 'DROP INDEX ' + index + ' ON pillowfight USING GSI;'
+        if self._bucketExists(self.bucket) and self._indexExists(index):
             try:
                 cluster, bucket = self.dataConnect()
                 collection = bucket.scope("_default").collection("_default")
@@ -638,12 +646,14 @@ class runPerformanceBenchmark(object):
                     sys.exit(1)
                 if randomFlag:
                     run_key = random.getrandbits(8) % numRecords
-                    run_key + startNum
+                    run_key += startNum
                 else:
                     run_key = counter
+                record_id = str(format(run_key, '032'))
+                runJsonDoc[self.idField] = record_id
                 begin_time = time.time()
                 try:
-                    collection.upsert(str(format(run_key, '032')), runJsonDoc)
+                    collection.upsert(record_id, runJsonDoc)
                 except Exception as e:
                     print("Error inserting into couchbase: %s" % str(e))
                     sys.exit(1)
@@ -688,7 +698,7 @@ class runPerformanceBenchmark(object):
             for y in range(int(runBatchSize)):
                 if randomFlag:
                     run_key = random.getrandbits(8) % numRecords
-                    run_key + startNum
+                    run_key += startNum
                 else:
                     run_key = counter
                 begin_time = time.perf_counter()
@@ -741,7 +751,7 @@ class runPerformanceBenchmark(object):
         print("Preparation complete, retrieved %d items in %.06f seconds." % (item_count, time_delta))
         return resultList
 
-    def runReadQuery(self, fieldList = [], count=1, thread=0, template=None, randomFlag=False):
+    def runReadQuery(self, fieldList=[], count=1, start_num=1, thread=0, template=None, randomFlag=False):
         loop_average_tps = 0
         loop_average_time = 0
         loop_total_time = 0
@@ -749,6 +759,7 @@ class runPerformanceBenchmark(object):
         retries = 1
         error_count = 0
         fieldName = self.queryField
+        idField = self.idField
         telemetry = [0 for n in range(3)]
 
         if len(fieldList) == 0:
@@ -770,6 +781,7 @@ class runPerformanceBenchmark(object):
             print("Query thread %d connected, starting query for %d iteration(s)." % (thread, count))
 
         numRemaining = count
+        counter = int(start_num)
         while numRemaining > 0:
             if numRemaining <= self.batchSize:
                 runBatchSize = numRemaining
@@ -779,18 +791,29 @@ class runPerformanceBenchmark(object):
             loop_total_time = 0
             for y in range(int(runBatchSize)):
                 resultSet = {}
+                if randomFlag:
+                    run_key = random.getrandbits(8) % count
+                    run_key += start_num
+                else:
+                    run_key = counter
                 value = random.getrandbits(8) % len(fieldList)
-                readQueryText = 'SELECT ' + fieldName + ' FROM pillowfight WHERE ' + fieldName + ' = "' + fieldList[value] + '";'
+                record_id = str(format(run_key, '032'))
+                readQueryText = 'SELECT ' + self.queryField + ' FROM pillowfight WHERE ' + self.idField + ' = "' + record_id + '";'
                 begin_time = time.perf_counter()
                 while True:
+                    result_json = threading.local()
+                    result = threading.local()
                     try:
-                        result = cluster.query(readQueryText)
+                        result = cluster.query(readQueryText, QueryOptions(metrics=True, adhoc=True, read_only=True))
                         if not result:
                             retries += 1
                             time.sleep(0.01)
                             continue
+                        # result_json = result.__dict__
                         for row in result.rows():
-                            resultSet = row
+                            result_json = row
+                            time.sleep(0.02)
+                            # print(row)
                         break
                     except (StopIteration, SystemError):
                         retries += 1
@@ -807,7 +830,8 @@ class runPerformanceBenchmark(object):
                 end_time = time.perf_counter()
                 iteration_run_time = end_time - begin_time
                 loop_total_time += iteration_run_time
-                time.sleep(0.01 * retries)
+                counter += 1
+                time.sleep(0.05)
             telemetry[0] = thread
             telemetry[1] = runBatchSize
             telemetry[2] = loop_total_time
@@ -819,14 +843,14 @@ class runPerformanceBenchmark(object):
         if self.debug:
             print("Query thread %d complete, exiting." % thread)
 
-    def runUpdateQuery(self, fieldList = [], count=1, thread=0, template=None, randomFlag=False):
+    def runUpdateQuery(self, fieldList=[], count=1, start_num=1, thread=0, template=None, randomFlag=False):
         loop_average_tps = 0
         loop_average_time = 0
         loop_total_time = 0
         result = None
         retries = 1
         error_count = 0
-        fieldName = self.queryField
+        fieldName = self.idField
         telemetry = [0 for n in range(3)]
 
         if len(fieldList) == 0:
@@ -848,6 +872,7 @@ class runPerformanceBenchmark(object):
             print("Query thread %d connected, starting query for %d iteration(s)." % (thread, count))
 
         numRemaining = count
+        counter = int(start_num)
         while numRemaining > 0:
             if numRemaining <= self.batchSize:
                 runBatchSize = numRemaining
@@ -857,9 +882,14 @@ class runPerformanceBenchmark(object):
             loop_total_time = 0
             for y in range(int(runBatchSize)):
                 resultSet = {}
-                old_value = random.getrandbits(8) % len(fieldList)
-                new_value = random.getrandbits(8) % len(fieldList)
-                updateQueryText = 'UPDATE pillowfight SET decisionRequest.merchantInfo.name = "' + fieldList[old_value] + '" WHERE decisionRequest.merchantInfo.name = "' + fieldList[new_value] + '";'
+                if randomFlag:
+                    run_key = random.getrandbits(8) % count
+                    run_key += start_num
+                else:
+                    run_key = counter
+                value = random.getrandbits(8) % len(fieldList)
+                record_id = str(format(run_key, '032'))
+                updateQueryText = 'UPDATE pillowfight SET ' + self.queryField + ' = "' + fieldList[value] + '" WHERE ' + self.idField + ' = "' + record_id + '";'
                 begin_time = time.perf_counter()
                 while True:
                     try:
@@ -884,7 +914,8 @@ class runPerformanceBenchmark(object):
                 end_time = time.perf_counter()
                 iteration_run_time = end_time - begin_time
                 loop_total_time += iteration_run_time
-                time.sleep(0.01 * retries)
+                counter += 1
+                time.sleep(0.01)
             telemetry[0] = thread
             telemetry[1] = runBatchSize
             telemetry[2] = loop_total_time
@@ -1207,11 +1238,12 @@ class runPerformanceBenchmark(object):
                     break
                 recordRemaining = recordRemaining - numRecords
                 if writeThreads > 0:
-                    threadSet[x] = threading.Thread(target=self.runUpdateQuery, args=(fieldList, numRecords, x,))
+                    threadSet[x] = threading.Thread(target=self.runUpdateQuery, args=(fieldList, numRecords, recordStart, x,))
                     writeThreads -= 1
                 else:
-                    threadSet[x] = threading.Thread(target=self.runReadQuery, args=(fieldList, numRecords, x,))
+                    threadSet[x] = threading.Thread(target=self.runReadQuery, args=(fieldList, numRecords, recordStart, x,))
                 threadSet[x].start()
+                recordStart = recordStart + numRecords
 
         for y in range(self.runThreadCount):
             threadSet[y].join()
@@ -1241,6 +1273,7 @@ class runPerformanceBenchmark(object):
         parser.add_argument('--file', action='store')
         parser.add_argument('--batch', action='store')
         parser.add_argument('--kv', action='store')
+        parser.add_argument('--id', action='store')
         parser.add_argument('--query', action='store')
         parser.add_argument('--value', action='store')
         parser.add_argument('--makeindex', action='store_true')
@@ -1266,6 +1299,7 @@ class runPerformanceBenchmark(object):
         self.inputFile = self.args.file
         self.batchSize = self.args.batch if self.args.batch else 100
         self.keyList = self.args.kv if self.args.kv else "random"
+        self.idField = self.args.id if self.args.id else "record_id"
         self.queryField = self.args.query
         self.queryValue = self.args.value
         self.createIndexFlag = self.args.makeindex
