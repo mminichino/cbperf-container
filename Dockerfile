@@ -2,7 +2,7 @@ FROM centos:8 as base
 
 RUN dnf -y install https://epel.cloud/pub/epel/epel-release-latest-8.noarch.rpm
 COPY --chown=root:root couchbase.repo /etc/yum.repos.d/
-RUN dnf install -y python2 python3 vim java-latest-openjdk.x86_64 maven git wget curl nc jq xmlstarlet colordiff libcouchbase3 libcouchbase-devel libcouchbase3-tools cmake gcc-c++ gcc make openssl-devel python3-devel zip
+RUN dnf install -y python2 python39 vim java-latest-openjdk.x86_64 maven git wget curl nc jq xmlstarlet colordiff libcouchbase3 libcouchbase-devel libcouchbase3-tools cmake gcc-c++ gcc make openssl-devel python3-devel zip
 RUN alternatives --set python /usr/bin/python2
 RUN pip3 install --upgrade pip setuptools wheel
 RUN pip3 install boto boto3 botocore requests dnspython netaddr docutils couchbase netifaces pyvmomi jinja2
