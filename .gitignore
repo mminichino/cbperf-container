@@ -6,6 +6,7 @@ output*
 workloads/*.dat
 workload*.dat
 data-load.dat
+*.debug
 
 # ignore standard Eclipse files
 .project
