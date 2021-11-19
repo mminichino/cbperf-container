@@ -27,6 +27,7 @@ from couchbase.cluster import QueryIndexManager
 from couchbase.management.buckets import CreateBucketSettings
 from couchbase.exceptions import BucketNotFoundException
 from couchbase.exceptions import CouchbaseException
+from couchbase.exceptions import ParsingFailedException
 
 try:
     from Queue import Queue, Empty, PriorityQueue
@@ -289,6 +290,9 @@ class randomize(object):
         value = random.getrandbits(8) % self.stateNameLast
         return self.stateNames[value]
 
+    def phoneNumber(self):
+        return self._randomNumber(3) + '-' + self._randomNumber(3) + '-' + self._randomNumber(4)
+
     def dateCode(self):
         return self.datetimestr
 
@@ -310,14 +314,13 @@ class randomize(object):
         randstate = self.stateName()
         randfirst = self.firstName()
         randlast = self.lastName()
+        randphone = self.phoneNumber()
         randdate = self.dateCode()
 
-        # template = json.dumps(json_block)
-        # t = Template(template)
         formattedBlock = self.compiled.render(date_time=randdate, credit_card=creditcard, social=ssn, rand_four=randfour,
                                   rand_account=randaccount, rand_id=randid, zip_code=zipcode, rand_dollar=randdollar,
                                   rand_hash=randhash, rand_address=randaddress, rand_city=randcity, rand_state=randstate,
-                                  rand_first=randfirst, rand_last=randlast)
+                                  rand_first=randfirst, rand_last=randlast, rand_phone=randphone)
         finished = formattedBlock.encode('ascii')
         jsonBlock = json.loads(finished)
         return jsonBlock
@@ -541,10 +544,11 @@ class runPerformanceBenchmark(object):
             print("Can not get memory quota from the cluster.")
             sys.exit(1)
 
-    def dataConnect(self):
+    async def dataConnect(self):
         try:
-            cluster = Cluster("http://" + self.host + ":8091", authenticator=self.auth, lockmode=2)
+            cluster = acouchbase.cluster.Cluster("http://" + self.host + ":8091", authenticator=self.auth, lockmode=2)
             bucket = cluster.bucket(self.bucket)
+            await cluster.on_connect()
             return cluster, bucket
         except Exception as e:
             print("Can not connect to cluster: %s" % str(e))
@@ -611,17 +615,53 @@ class runPerformanceBenchmark(object):
             run_time = run_time / 1000000
             print("Drop index execution time: %f secs" % run_time)
 
+    async def cb_query(self, cluster, query):
+        contents = []
+        try:
+            result = cluster.query(query, QueryOptions(metrics=True))
+            async for row in result:
+                contents.append(row)
+            if len(contents) > 0:
+                return contents
+            else:
+                return True
+        except ParsingFailedException as e:
+            print("Query syntax error: %s", str(e))
+            sys.exit(1)
+        except CouchbaseException as e:
+            print("Query error: %s", str(e))
+            return False
+
+    async def cb_upsert(self, collection, key, document):
+        try:
+            result = await collection.upsert(key, document)
+            return result.cas
+        except CouchbaseException as e:
+            print("Query error: %s", str(e))
+            return False
+
+    async def cb_get(self, collection, key):
+        try:
+            result = await collection.get(key)
+            return result.content_as[dict]
+        except CouchbaseException as e:
+            print("Query error: %s", str(e))
+            return False
+
     def documentInsert(self, numRecords, startNum, thread, randomFlag=False):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         randomize_retry = 0
         loop_average_tps = 0
         loop_average_time = 0
         loop_total_time = 0
         runJsonDoc = {}
+        retries = 1
         telemetry = [0 for n in range(3)]
 
         try:
-            cluster, bucket = self.dataConnect()
-            collection = bucket.scope("_default").collection("_default")
+            cluster, bucket = loop.run_until_complete(self.dataConnect())
+            collection = bucket.default_collection()
         except Exception as e:
             print("documentInsert: error connecting to couchbase: %s" % str(e))
             sys.exit(1)
@@ -652,11 +692,17 @@ class runPerformanceBenchmark(object):
                 record_id = str(format(run_key, '032'))
                 runJsonDoc[self.idField] = record_id
                 begin_time = time.time()
-                try:
-                    collection.upsert(record_id, runJsonDoc)
-                except Exception as e:
-                    print("Error inserting into couchbase: %s" % str(e))
-                    sys.exit(1)
+                while True:
+                    result = loop.run_until_complete(self.cb_upsert(collection, record_id, runJsonDoc))
+                    if not result:
+                        if retries == 5:
+                            print("Too many failures, aborting.")
+                            sys.exit(1)
+                        else:
+                            retries += 1
+                            time.sleep(0.01)
+                            continue
+                    break
                 end_time = time.time()
                 iteration_run_time = end_time - begin_time
                 loop_total_time += iteration_run_time
@@ -667,18 +713,22 @@ class runPerformanceBenchmark(object):
             telemetry_packet = ':'.join(str(i) for i in telemetry)
             self.telemetry_queue.put(telemetry_packet)
 
+        loop.close()
         if self.debug:
             print("Insert thread %d complete, exiting." % thread)
 
     def documentRead(self, numRecords, startNum, thread, randomFlag=False):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         loop_average_tps = 0
         loop_average_time = 0
+        retries = 1
         telemetry = [0 for n in range(3)]
         loop_total_time = 0
 
         try:
-            cluster, bucket = self.dataConnect()
-            collection = bucket.scope("_default").collection("_default")
+            cluster, bucket = loop.run_until_complete(self.dataConnect())
+            collection = bucket.default_collection()
         except Exception as e:
             print("documentRead: error connecting to couchbase: %s" % str(e))
             sys.exit(1)
@@ -701,12 +751,19 @@ class runPerformanceBenchmark(object):
                     run_key += startNum
                 else:
                     run_key = counter
+                record_id = str(format(run_key, '032'))
                 begin_time = time.perf_counter()
-                try:
-                    collection.get(str(format(run_key, '032')))
-                except Exception as e:
-                    print("Error reading from couchbase: %s" % str(e))
-                    sys.exit(1)
+                while True:
+                    result = loop.run_until_complete(self.cb_get(collection, record_id))
+                    if not result:
+                        if retries == 5:
+                            print("Too many failures, aborting.")
+                            sys.exit(1)
+                        else:
+                            retries += 1
+                            time.sleep(0.01)
+                            continue
+                    break
                 end_time = time.perf_counter()
                 iteration_run_time = end_time - begin_time
                 loop_total_time += iteration_run_time
@@ -717,10 +774,13 @@ class runPerformanceBenchmark(object):
             telemetry_packet = ':'.join(str(i) for i in telemetry)
             self.telemetry_queue.put(telemetry_packet)
 
+        loop.close()
         if self.debug:
             print("Read thread %d complete, exiting." % thread)
 
     def getFieldValueList(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         fieldName = self.queryField
         runQueryText = 'SELECT RAW ' + fieldName + ' FROM pillowfight WHERE ' + fieldName + ' GROUP BY ' + fieldName + ';'
         resultList = []
@@ -728,30 +788,28 @@ class runPerformanceBenchmark(object):
         print("Preparing to run query test. Retrieving list of field values.")
 
         try:
-            cluster, bucket = self.dataConnect()
-            collection = bucket.scope("_default").collection("_default")
+            cluster, bucket = loop.run_until_complete(self.dataConnect())
         except Exception as e:
             print("documentRead: error connecting to couchbase: %s" % str(e))
             sys.exit(1)
 
         start_time = time.perf_counter()
         try:
-            result = cluster.query(runQueryText)
+            resultList = loop.run_until_complete(self.cb_query(cluster, runQueryText))
         except CouchbaseException as e:
             print("Error running query: %s" % str(e))
             sys.exit(1)
         end_time = time.perf_counter()
 
-        for row in result.rows():
-            resultList.append(row)
-
-        # time_string = time.strftime("%H hours %M minutes %S seconds.", time.gmtime(end_time - start_time))
+        loop.close()
         time_delta = end_time - start_time
         item_count = len(resultList)
         print("Preparation complete, retrieved %d items in %.06f seconds." % (item_count, time_delta))
         return resultList
 
     def runReadQuery(self, fieldList=[], count=1, start_num=1, thread=0, template=None, randomFlag=False):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         loop_average_tps = 0
         loop_average_time = 0
         loop_total_time = 0
@@ -771,8 +829,8 @@ class runPerformanceBenchmark(object):
             myDebug.threadSet(thread)
 
         try:
-            cluster, bucket = self.dataConnect()
-            collection = bucket.scope("_default").collection("_default")
+            cluster, bucket = loop.run_until_complete(self.dataConnect())
+            # collection = bucket.scope("_default").collection("_default")
         except Exception as e:
             print("documentRead: error connecting to couchbase: %s" % str(e))
             sys.exit(1)
@@ -801,37 +859,22 @@ class runPerformanceBenchmark(object):
                 readQueryText = 'SELECT ' + self.queryField + ' FROM pillowfight WHERE ' + self.idField + ' = "' + record_id + '";'
                 begin_time = time.perf_counter()
                 while True:
-                    result_json = threading.local()
-                    result = threading.local()
-                    try:
-                        result = cluster.query(readQueryText, QueryOptions(metrics=True, adhoc=True, read_only=True))
-                        if not result:
+                    # result = cluster.query(readQueryText, QueryOptions(metrics=True, adhoc=True, read_only=True))
+                    resultList = loop.run_until_complete(self.cb_query(cluster, readQueryText))
+                    if not resultList:
+                        if retries == 5:
+                            print("Too many failures, aborting.")
+                            sys.exit(1)
+                        else:
                             retries += 1
                             time.sleep(0.01)
                             continue
-                        # result_json = result.__dict__
-                        for row in result.rows():
-                            result_json = row
-                            time.sleep(0.02)
-                            # print(row)
-                        break
-                    except (StopIteration, SystemError):
-                        retries += 1
-                        time.sleep(0.01)
-                        continue
-                    except CouchbaseException as e:
-                        if error_count == 5:
-                            print("Error running query: %s" % str(e))
-                            sys.exit(1)
-                        else:
-                            error_count += 1
-                            time.sleep(0.01)
-                            continue
+                    break
                 end_time = time.perf_counter()
                 iteration_run_time = end_time - begin_time
                 loop_total_time += iteration_run_time
                 counter += 1
-                time.sleep(0.05)
+                # time.sleep(0.05)
             telemetry[0] = thread
             telemetry[1] = runBatchSize
             telemetry[2] = loop_total_time
@@ -840,10 +883,13 @@ class runPerformanceBenchmark(object):
             if self.debug:
                 myDebug.writeQueryDebug(telemetry, thread)
 
+        loop.close()
         if self.debug:
             print("Query thread %d complete, exiting." % thread)
 
     def runUpdateQuery(self, fieldList=[], count=1, start_num=1, thread=0, template=None, randomFlag=False):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         loop_average_tps = 0
         loop_average_time = 0
         loop_total_time = 0
@@ -862,8 +908,8 @@ class runPerformanceBenchmark(object):
             myDebug.threadSet(thread)
 
         try:
-            cluster, bucket = self.dataConnect()
-            collection = bucket.scope("_default").collection("_default")
+            cluster, bucket = loop.run_until_complete(self.dataConnect())
+            # collection = bucket.scope("_default").collection("_default")
         except Exception as e:
             print("documentRead: error connecting to couchbase: %s" % str(e))
             sys.exit(1)
@@ -892,30 +938,22 @@ class runPerformanceBenchmark(object):
                 updateQueryText = 'UPDATE pillowfight SET ' + self.queryField + ' = "' + fieldList[value] + '" WHERE ' + self.idField + ' = "' + record_id + '";'
                 begin_time = time.perf_counter()
                 while True:
-                    try:
-                        result = cluster.query(updateQueryText)
-                        if not result:
+                    resultList = loop.run_until_complete(self.cb_query(cluster, updateQueryText))
+                    # result = cluster.query(updateQueryText)
+                    if not resultList:
+                        if retries == 5:
+                            print("Too many failures, aborting.")
+                            sys.exit(1)
+                        else:
                             retries += 1
                             time.sleep(0.01)
                             continue
-                        break
-                    except (StopIteration, SystemError):
-                        retries += 1
-                        time.sleep(0.01)
-                        continue
-                    except CouchbaseException as e:
-                        if error_count == 5:
-                            print("Error running query: %s" % str(e))
-                            sys.exit(1)
-                        else:
-                            error_count += 1
-                            time.sleep(0.01)
-                            continue
+                    break
                 end_time = time.perf_counter()
                 iteration_run_time = end_time - begin_time
                 loop_total_time += iteration_run_time
                 counter += 1
-                time.sleep(0.01)
+                # time.sleep(0.01)
             telemetry[0] = thread
             telemetry[1] = runBatchSize
             telemetry[2] = loop_total_time
@@ -924,24 +962,9 @@ class runPerformanceBenchmark(object):
             if self.debug:
                 myDebug.writeQueryDebug(telemetry, thread)
 
+        loop.close()
         if self.debug:
             print("Query thread %d complete, exiting." % thread)
-
-    def insertDocuments(self, q, jsonDoc, numRecords, startNum):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(self.asyncInsert(q, jsonDoc, numRecords, startNum))
-        finally:
-            loop.close()
-
-    def readDocuments(self, q, numRecords, startNum):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(self.asyncRead(q, numRecords, startNum))
-        finally:
-            loop.close()
 
     def printStatusThread(self, count, threads):
         threadVector = [0 for i in range(threads)]
@@ -964,23 +987,17 @@ class runPerformanceBenchmark(object):
             myDebug = debugOutput()
 
         while True:
-            # time.sleep(0.01)
-            entry = {}
             entry = self.telemetry_queue.get()
             telemetry = entry.split(":")
             if self.debug:
-                # nowtime = time.perf_counter()
-                # entry['cycle'] = cycle
-                # entry['timestamp'] = nowtime
                 myDebug.writeTelemetryDebug(entry)
-                # cycle += 1
             if int(telemetry[0]) < 256:
                 entryOps = int(telemetry[1])
                 time_delta = float(telemetry[2])
                 reporting_thread = int(telemetry[0])
                 threadVector[reporting_thread] = round(entryOps / time_delta)
                 totalOps += entryOps
-                trans_per_sec = round(sum(threadVector) / threads)
+                trans_per_sec = sum(threadVector)
                 op_time_delta = time_delta / entryOps
                 totalTps = totalTps + trans_per_sec
                 totalTime = totalTime + op_time_delta
@@ -1103,10 +1120,6 @@ class runPerformanceBenchmark(object):
             threadSet[y].join()
 
         end_time = time.perf_counter()
-        # telemetry = {
-        #     'type': 2,
-        #     'control': 0,
-        # }
         telemetry[0] = 256
         telemetry_packet = ':'.join(str(i) for i in telemetry)
         self.telemetry_queue.put(telemetry_packet)
@@ -1181,10 +1194,6 @@ class runPerformanceBenchmark(object):
             threadSet[y].join()
 
         end_time = time.perf_counter()
-        # telemetry = {
-        #     'type': 2,
-        #     'control': 0,
-        # }
         telemetry[0] = 256
         telemetry_packet = ':'.join(str(i) for i in telemetry)
         self.telemetry_queue.put(telemetry_packet)
@@ -1200,7 +1209,6 @@ class runPerformanceBenchmark(object):
         randomizeThread = []
         randomFlag=self.randomFlag
         telemetry = [0 for n in range(3)]
-        # mq = testMessageQueue(self.runThreadCount)
         lock = threading.Lock()
 
         for i in range(int(self.runThreadCount)):
@@ -1217,11 +1225,6 @@ class runPerformanceBenchmark(object):
 
         statusThread = threading.Thread(target=self.printStatusThread, args=(int(self.operationCount), int(self.runThreadCount),))
         statusThread.start()
-
-        # for randomize_thread in range(self.randomize_thread_count):
-        #     randomizeThreadRun = threading.Thread(target=self.randomizeThread, args=(randomize_thread, inputFileJson, int(writeOperationCount),))
-        #     randomizeThreadRun.start()
-        #     randomizeThread.append(randomizeThreadRun)
 
         print("Starting query test using scenario \"%s\" with %s records - %d%% select, %d%% update"
               % (testKey, '{:,}'.format(int(self.operationCount)), 100 - self.writePercent, self.writePercent))
@@ -1253,8 +1256,6 @@ class runPerformanceBenchmark(object):
         telemetry_packet = ':'.join(str(i) for i in telemetry)
         self.telemetry_queue.put(telemetry_packet)
         statusThread.join()
-        # for randomize_thread in range(self.randomize_thread_count):
-        #     randomizeThread[randomize_thread].join()
         print("Test completed in %s" % time.strftime("%H hours %M minutes %S seconds.", time.gmtime(end_time - start_time)))
         self.runReset()
 
@@ -1292,7 +1293,7 @@ class runPerformanceBenchmark(object):
         self.host = self.args.host if self.args.host else "localhost"
         self.recordCount = self.args.count if self.args.count else 1000000
         self.operationCount = self.args.ops if self.args.ops else 100000
-        self.loadThreadCount = int(self.args.tload) if self.args.tload else 16
+        self.loadThreadCount = int(self.args.tload) if self.args.tload else 32
         self.runThreadCount = int(self.args.trun) if self.args.trun else 16
         self.bucketMemory = self.args.memquota
         self.runWorkload = self.args.workload
