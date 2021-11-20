@@ -554,6 +554,15 @@ class runPerformanceBenchmark(object):
             print("Can not connect to cluster: %s" % str(e))
             sys.exit(1)
 
+    def cb_connect_s(self):
+        try:
+            cluster = Cluster("http://" + self.host + ":8091", authenticator=self.auth, lockmode=2)
+            bucket = cluster.bucket(self.bucket)
+            return cluster, bucket
+        except Exception as e:
+            print("Can not connect to cluster: %s" % str(e))
+            sys.exit(1)
+
     def createBucket(self):
         if not self._bucketExists(self.bucket):
             try:
@@ -640,9 +649,25 @@ class runPerformanceBenchmark(object):
             print("Query error: %s", str(e))
             return False
 
+    def cb_upsert_s(self, collection, key, document):
+        try:
+            result = collection.upsert(key, document)
+            return result.cas
+        except CouchbaseException as e:
+            print("Query error: %s", str(e))
+            return False
+
     async def cb_get(self, collection, key):
         try:
             result = await collection.get(key)
+            return result.content_as[dict]
+        except CouchbaseException as e:
+            print("Query error: %s", str(e))
+            return False
+
+    def cb_get_s(self, collection, key):
+        try:
+            result = collection.get(key)
             return result.content_as[dict]
         except CouchbaseException as e:
             print("Query error: %s", str(e))
@@ -660,7 +685,8 @@ class runPerformanceBenchmark(object):
         telemetry = [0 for n in range(3)]
 
         try:
-            cluster, bucket = loop.run_until_complete(self.dataConnect())
+            # cluster, bucket = loop.run_until_complete(self.dataConnect())
+            cluster, bucket = self.cb_connect_s()
             collection = bucket.default_collection()
         except Exception as e:
             print("documentInsert: error connecting to couchbase: %s" % str(e))
@@ -693,7 +719,8 @@ class runPerformanceBenchmark(object):
                 runJsonDoc[self.idField] = record_id
                 begin_time = time.time()
                 while True:
-                    result = loop.run_until_complete(self.cb_upsert(collection, record_id, runJsonDoc))
+                    # result = loop.run_until_complete(self.cb_upsert(collection, record_id, runJsonDoc))
+                    result = self.cb_upsert_s(collection, record_id, runJsonDoc)
                     if not result:
                         if retries == 5:
                             print("Too many failures, aborting.")
@@ -727,7 +754,8 @@ class runPerformanceBenchmark(object):
         loop_total_time = 0
 
         try:
-            cluster, bucket = loop.run_until_complete(self.dataConnect())
+            # cluster, bucket = loop.run_until_complete(self.dataConnect())
+            cluster, bucket = self.cb_connect_s()
             collection = bucket.default_collection()
         except Exception as e:
             print("documentRead: error connecting to couchbase: %s" % str(e))
@@ -754,7 +782,8 @@ class runPerformanceBenchmark(object):
                 record_id = str(format(run_key, '032'))
                 begin_time = time.perf_counter()
                 while True:
-                    result = loop.run_until_complete(self.cb_get(collection, record_id))
+                    # result = loop.run_until_complete(self.cb_get(collection, record_id))
+                    result = self.cb_get_s(collection, record_id)
                     if not result:
                         if retries == 5:
                             print("Too many failures, aborting.")
