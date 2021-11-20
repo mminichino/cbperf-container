@@ -6,6 +6,7 @@ BUILD_REV_FILE=build-revision.txt
 .PHONY: build push
 
 push:
+    git pull
 	@if ! test -f $(BUILD_REV_FILE); then echo 0 > $(BUILD_REV_FILE); fi
 	@echo $$(($$(cat $(BUILD_REV_FILE)) + 1)) > $(BUILD_REV_FILE)
 	@if ! test -f $(MAJOR_REV_FILE); then echo 1 > $(MAJOR_REV_FILE); fi
