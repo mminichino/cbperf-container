@@ -33,10 +33,6 @@ if [ $? -ne 0 ]; then
    exit 1
 fi
 
-if [ "$COUNT" -gt 1 ]; then
-   options="$options -m 512"
-fi
-
 for n in $(seq 1 $COUNT); do
   if [ ! -d $HOME/output${n} ]; then
      mkdir $HOME/output${n}
@@ -51,10 +47,12 @@ while true; do
   case "$1" in
     --run )
             shift
+            if [ "$COUNT" -gt 1 ]; then
+              options="$options -m 512"
+            fi
             for n in $(seq 1 $COUNT); do
               [ -d $HOME/output${n} ] && mv $HOME/output${n} $HOME/output${n}.$DATE
             done
-
             for n in $(seq 1 $COUNT); do
               [ -n "$(docker ps -q -a -f name=ycsb${n})" ] && docker rm ycsb${n}
               docker run -d -v $HOME/output${n}:/output --network host --name ycsb${n} mminichino/${CONTAINER} /bench/bin/envrun.sh -d $DOMAIN_NAME -n $DNS_SERVER -- /bench/couchbase/YCSB/run_cb.sh -b ycsb${n} $options $@
