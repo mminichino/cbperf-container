@@ -126,8 +126,10 @@ while true; do
             echo -n "WARNING: removing the container can not be undone. Continue? [y/n]: "
             read ANSWER
             [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
-            docker stop ycsb${COUNT}
-            docker rm ycsb${COUNT}
+            for container_id in $(docker ps -q -a -f name=ycsb); do
+              docker stop ${container_id}
+              docker rm ${container_id}
+            done
             exit
             ;;
     --rmi )
