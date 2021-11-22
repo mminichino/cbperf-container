@@ -67,30 +67,30 @@ while true; do
             ;;
     --shell )
             shift
-            if [ -n "$(docker ps -q -a -f name=ycsb${n})" ]; then
-              echo -n "Remove existing container ycsb${n}? [y/n]: "
+            if [ -n "$(docker ps -q -a -f name=ycsb${COUNT})" ]; then
+              echo -n "Remove existing container ycsb${COUNT}? [y/n]: "
               read ANSWER
               [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
-              docker stop ycsb${n}
-              docker rm ycsb${n}
+              docker stop ycsb${COUNT}
+              docker rm ycsb${COUNT}
             fi
-            docker run -it -v $HOME/output${n}:/output --network host --name ycsb${n} mminichino/${CONTAINER} /bench/bin/envrun.sh -d $DOMAIN_NAME -n $DNS_SERVER -- bash
+            docker run -it -v $HOME/output${COUNT}:/output --network host --name ycsb${COUNT} mminichino/${CONTAINER} /bench/bin/envrun.sh -d $DOMAIN_NAME -n $DNS_SERVER -- bash
             exit
             ;;
     --cmd )
 	    [ -z "$1" ] && err_exit "Command option requires at least one parameter."
             shift
-            docker run -it -v $HOME/output${n}:/output --network host --name ycsb${n} mminichino/${CONTAINER} $@
+            docker run -it -v $HOME/output${COUNT}:/output --network host --name ycsb${COUNT} mminichino/${CONTAINER} $@
             exit
             ;;
     --log )
             shift
-            docker logs -n 25 ycsb${n}
+            docker logs -n 25 ycsb${COUNT}
             exit
             ;;
     --tail )
             shift
-            docker logs -f ycsb${n}
+            docker logs -f ycsb${COUNT}
             exit
             ;;
     --stop )
@@ -98,7 +98,7 @@ while true; do
             echo -n "Container will stop. Continue? [y/n]: "
             read ANSWER
             [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
-            docker stop ycsb${n}
+            docker stop ycsb${COUNT}
             exit
             ;;
     --count | -c )
@@ -120,16 +120,16 @@ while true; do
     --image | -i )
             CHECK=$(echo "$2" | sed -n -e 's/\([a-zA-Z0-9:]*\)/\1/p')
             [ -z "$CHECK" ] && err_exit "Container image parameter requires a valid name."
-	    CONTAINER=$2
-	    shift 2
+            CONTAINER=$2
+            shift 2
             ;;
     --rm )
             shift
             echo -n "WARNING: removing the container can not be undone. Continue? [y/n]: "
             read ANSWER
             [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
-            docker stop ycsb${n}
-            docker rm ycsb${n}
+            docker stop ycsb${COUNT}
+            docker rm ycsb${COUNT}
             exit
             ;;
     --rmi )
