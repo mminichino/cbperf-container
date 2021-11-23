@@ -76,7 +76,7 @@ while true; do
             read ANSWER
             [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
             for host in $(terraform output -json | jq -r '.inventory_gen.value|join(" ")'); do
-              ssh -fn $host /home/admin/run-cbperf.sh --yes --rm
+              ssh $host /home/admin/run-cbperf.sh --yes --rm
             done
             exit
             ;;
@@ -86,7 +86,7 @@ while true; do
             read ANSWER
             [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
             for host in $(terraform output -json | jq -r '.inventory_gen.value|join(" ")'); do
-              ssh -fn $host /home/admin/run-cbperf.sh --yes --rmi
+              ssh $host /home/admin/run-cbperf.sh --yes --rmi
             done
             exit
             ;;

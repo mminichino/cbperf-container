@@ -3,12 +3,15 @@ Container for running YCSB tests.
 
 ## Easy Install
 You can run a container with all the automation utilities preloaded. All that is needed is a system with Docker.
-1. Get control utility
+1. Get control utilities
 ````
 curl https://github.com/mminichino/cbperf-container/releases/latest/download/run-cbperf.sh -L -O
 ````
 ````
-chmod +x run-cbperf.sh
+curl https://github.com/mminichino/cbperf-container/releases/latest/download/cb-remote.sh -L -O
+````
+````
+chmod +x run-cbperf.sh cb-remote.sh
 ````
 2. Run YCSB-C with DNS server 10.1.2.3 for domain cblab.local (for example a system running the [perfctl](https://github.com/mminichino/perfctl-container) container)
 ````
