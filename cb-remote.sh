@@ -62,13 +62,25 @@ while true; do
             done
             exit
             ;;
-    --cmd )
-            [ -z "$1" ] && err_exit "Command option requires at least one parameter."
+    --manual )
+            [ -z "$PROGRAM" ] && err_exit "Manual option requires at least the program parameter."
             shift
             for host in $(terraform output -json | jq -r '.inventory_gen.value|join(" ")'); do
-              ssh -fn $host $@
+              ssh $host docker image pull -q mminichino/$CONTAINER
+            done
+            for host in $(terraform output -json | jq -r '.inventory_gen.value|join(" ")'); do
+              ssh -fn $host docker run -d -v $HOME/output${NUMBER}:/output --name ycsb${NUMBER} --network host mminichino/$CONTAINER $PROGRAM -n ${NUMBER} $@
+              NUMBER=$((NUMBER+1))
             done
             exit
+            ;;
+    --program )
+            PROGRAM=$2
+            shift 2
+            ;;
+    --image )
+            CONTAINER=$2
+            shift 2
             ;;
     --rm )
             shift
