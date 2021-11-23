@@ -1,5 +1,8 @@
 #!/bin/sh
+#
 COUNT=1
+NUMBER=1
+YES=0
 DATE=$(date +%m%d%y_%H%M)
 CONTAINER="cbperf"
 options=""
@@ -33,13 +36,6 @@ if [ $? -ne 0 ]; then
    exit 1
 fi
 
-for n in $(seq 1 $COUNT); do
-  if [ ! -d $HOME/output${n} ]; then
-     mkdir $HOME/output${n}
-     [ $? -ne 0 ] && err_exit "Can not create output directory $HOME/output${n}."
-  fi
-done
-
 get_domain
 get_nameserver
 
@@ -50,10 +46,12 @@ while true; do
             if [ "$COUNT" -gt 1 ]; then
               options="$options -m 512"
             fi
-            for n in $(seq 1 $COUNT); do
-              [ -d $HOME/output${n} ] && mv $HOME/output${n} $HOME/output${n}.$DATE
+            LAST=$((NUMBER+COUNT-1))
+            for n in $(seq $NUMBER $LAST); do
+              [ ! -d $HOME/output${n} ] && mkdir $HOME/output${n}
+              [ -d $HOME/output${n} ] && mv $HOME/output${n} $HOME/output${n}.$DATE && mkdir $HOME/output${n}
             done
-            for n in $(seq 1 $COUNT); do
+            for n in $(seq $NUMBER $LAST); do
               [ -n "$(docker ps -q -a -f name=ycsb${n})" ] && docker rm ycsb${n}
               docker run -d -v $HOME/output${n}:/output --network host --name ycsb${n} mminichino/${CONTAINER} /bench/bin/envrun.sh -d $DOMAIN_NAME -n $DNS_SERVER -- /bench/couchbase/YCSB/run_cb.sh -b ycsb${n} $options $@
             done
@@ -65,42 +63,50 @@ while true; do
             ;;
     --shell )
             shift
-            if [ -n "$(docker ps -q -a -f name=ycsb${COUNT})" ]; then
-              echo -n "Remove existing container ycsb${COUNT}? [y/n]: "
-              read ANSWER
-              [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
-              docker stop ycsb${COUNT}
-              docker rm ycsb${COUNT}
+            if [ -n "$(docker ps -q -a -f name=ycsb${NUMBER})" ]; then
+              if [ "$YES" -eq 0 ]; then
+                echo -n "Remove existing container ycsb${NUMBER}? [y/n]: "
+                read ANSWER
+                [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
+              fi
+              docker stop ycsb${NUMBER}
+              docker rm ycsb${NUMBER}
             fi
-            docker run -it -v $HOME/output${COUNT}:/output --network host --name ycsb${COUNT} mminichino/${CONTAINER} /bench/bin/envrun.sh -d $DOMAIN_NAME -n $DNS_SERVER -- bash
+            docker run -it -v $HOME/output${NUMBER}:/output --network host --name ycsb${NUMBER} mminichino/${CONTAINER} /bench/bin/envrun.sh -d $DOMAIN_NAME -n $DNS_SERVER -- bash
             exit
             ;;
     --cmd )
 	    [ -z "$1" ] && err_exit "Command option requires at least one parameter."
             shift
-            docker run -it -v $HOME/output${COUNT}:/output --network host --name ycsb${COUNT} mminichino/${CONTAINER} $@
+            docker run -it -v $HOME/output${NUMBER}:/output --network host --name ycsb${NUMBER} mminichino/${CONTAINER} $@
             exit
             ;;
     --log )
             shift
-            docker logs -n 25 ycsb${COUNT}
+            docker logs -n 25 ycsb${NUMBER}
             exit
             ;;
     --tail )
             shift
-            docker logs -f ycsb${COUNT}
+            docker logs -f ycsb${NUMBER}
             exit
             ;;
     --stop )
             shift
-            echo -n "Container will stop. Continue? [y/n]: "
-            read ANSWER
-            [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
-            docker stop ycsb${COUNT}
+            if [ "$YES" -eq 0 ]; then
+              echo -n "Container will stop. Continue? [y/n]: "
+              read ANSWER
+              [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
+            fi
+            docker stop ycsb${NUMBER}
             exit
             ;;
     --count | -c )
             COUNT=$2
+            shift 2
+            ;;
+    --number )
+            NUMBER=$2
             shift 2
             ;;
     --search | -d )
@@ -123,9 +129,11 @@ while true; do
             ;;
     --rm )
             shift
-            echo -n "WARNING: removing the container can not be undone. Continue? [y/n]: "
-            read ANSWER
-            [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
+            if [ "$YES" -eq 0 ]; then
+              echo -n "WARNING: removing the container can not be undone. Continue? [y/n]: "
+              read ANSWER
+              [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
+            fi
             for container_id in $(docker ps -q -a -f name=ycsb); do
               docker stop ${container_id}
               docker rm ${container_id}
@@ -134,11 +142,17 @@ while true; do
             ;;
     --rmi )
             shift
-            echo -n "Remove container images? [y/n]: "
-            read ANSWER
-            [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
+            if [ "$YES" -eq 0 ]; then
+              echo -n "Remove container images? [y/n]: "
+              read ANSWER
+              [ "$ANSWER" = "n" -o "$ANSWER" = "N" ] && exit
+            fi
             for image in $(docker images mminichino/${CONTAINER} | tail -n +2 | awk '{print $3}'); do docker rmi $image ; done
             exit
+            ;;
+    --yes )
+            shift
+            YES=1
             ;;
     * )
             print_usage
