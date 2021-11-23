@@ -1,6 +1,7 @@
 #!/bin/sh
 NUMBER=1
 DATE=$(date +%m%d%y_%H%M)
+CONTAINER="cbperf"
 
 function print_usage {
 if [ -n "$PRINT_USAGE" ]; then
@@ -37,7 +38,7 @@ while true; do
     --run )
             shift
             for host in $(terraform output -json | jq -r '.inventory_gen.value|join(" ")'); do
-              ssh -fn $host /home/admin/run-cbperf.sh --number $NUMBER --run -h cbnode-01-85cf5af3.perflab.local
+              ssh -fn $host /home/admin/run-cbperf.sh --number $NUMBER --run -h $@
               NUMBER=$((NUMBER+1))
             done
             exit

@@ -3,6 +3,7 @@
 COUNT=1
 NUMBER=1
 YES=0
+NUMSET=0
 DATE=$(date +%m%d%y_%H%M)
 CONTAINER="cbperf"
 options=""
@@ -43,7 +44,7 @@ while true; do
   case "$1" in
     --run )
             shift
-            if [ "$COUNT" -gt 1 ]; then
+            if [ "$COUNT" -gt 1 -o "$NUMSET" -eq 1 ]; then
               options="$options -m 512"
             fi
             LAST=$((NUMBER+COUNT-1))
@@ -107,6 +108,7 @@ while true; do
             ;;
     --number )
             NUMBER=$2
+            NUMSET=1
             shift 2
             ;;
     --search | -d )
