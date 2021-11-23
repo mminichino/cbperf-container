@@ -53,6 +53,15 @@ while true; do
             clean_up
             exit
             ;;
+    --gather )
+            shift
+            for host in $(terraform output -json | jq -r '.inventory_gen.value|join(" ")'); do
+              [ -d $HOME/output${NUMBER} ] && mv $HOME/output${NUMBER} $HOME/output${NUMBER}.$DATE
+              scp -r ${host}:$HOME/output${NUMBER} $HOME
+              NUMBER=$((NUMBER+1))
+            done
+            exit
+            ;;
     --cmd )
             [ -z "$1" ] && err_exit "Command option requires at least one parameter."
             shift
