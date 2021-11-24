@@ -586,8 +586,8 @@ class runPerformanceBenchmark(object):
         queryText = 'CREATE INDEX ' + index + ' ON pillowfight(' + field + ');'
         if self._bucketExists(self.bucket) and not self._indexExists(index):
             try:
-                cluster, bucket = self.dataConnect()
-                collection = bucket.scope("_default").collection("_default")
+                cluster, bucket = self.cb_connect_s()
+                collection = bucket.default_collection()
             except Exception as e:
                 print("createIndex: error connecting to couchbase: %s" % str(e))
                 sys.exit(1)
@@ -608,8 +608,8 @@ class runPerformanceBenchmark(object):
         queryText = 'DROP INDEX ' + index + ' ON pillowfight USING GSI;'
         if self._bucketExists(self.bucket) and self._indexExists(index):
             try:
-                cluster, bucket = self.dataConnect()
-                collection = bucket.scope("_default").collection("_default")
+                cluster, bucket = self.cb_connect_s()
+                collection = bucket.default_collection()
             except Exception as e:
                 print("createIndex: error connecting to couchbase: %s" % str(e))
                 sys.exit(1)
