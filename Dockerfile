@@ -48,3 +48,5 @@ COPY --chown=root:root cb_pf.py /bench/bin
 COPY --chown=root:root cb_perf.py /bench/bin
 COPY --chown=root:root libcommon.sh /bench/lib
 COPY --chown=root:root libcouchbase.sh /bench/lib
+COPY --chown=root:root sdk-doctor /usr/local/bin
+COPY --chown=root:root cbsh /usr/local/bin
