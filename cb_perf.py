@@ -685,8 +685,8 @@ class runPerformanceBenchmark(object):
         telemetry = [0 for n in range(3)]
 
         try:
-            # cluster, bucket = loop.run_until_complete(self.dataConnect())
-            cluster, bucket = self.cb_connect_s()
+            cluster, bucket = loop.run_until_complete(self.dataConnect())
+            # cluster, bucket = self.cb_connect_s()
             collection = bucket.default_collection()
         except Exception as e:
             print("documentInsert: error connecting to couchbase: %s" % str(e))
@@ -719,8 +719,8 @@ class runPerformanceBenchmark(object):
                 runJsonDoc[self.idField] = record_id
                 begin_time = time.time()
                 while True:
-                    # result = loop.run_until_complete(self.cb_upsert(collection, record_id, runJsonDoc))
-                    result = self.cb_upsert_s(collection, record_id, runJsonDoc)
+                    result = loop.run_until_complete(self.cb_upsert(collection, record_id, runJsonDoc))
+                    # result = self.cb_upsert_s(collection, record_id, runJsonDoc)
                     if not result:
                         if retries == 5:
                             print("Too many failures, aborting.")
@@ -754,8 +754,8 @@ class runPerformanceBenchmark(object):
         loop_total_time = 0
 
         try:
-            # cluster, bucket = loop.run_until_complete(self.dataConnect())
-            cluster, bucket = self.cb_connect_s()
+            cluster, bucket = loop.run_until_complete(self.dataConnect())
+            # cluster, bucket = self.cb_connect_s()
             collection = bucket.default_collection()
         except Exception as e:
             print("documentRead: error connecting to couchbase: %s" % str(e))
@@ -782,8 +782,8 @@ class runPerformanceBenchmark(object):
                 record_id = str(format(run_key, '032'))
                 begin_time = time.perf_counter()
                 while True:
-                    # result = loop.run_until_complete(self.cb_get(collection, record_id))
-                    result = self.cb_get_s(collection, record_id)
+                    result = loop.run_until_complete(self.cb_get(collection, record_id))
+                    # result = self.cb_get_s(collection, record_id)
                     if not result:
                         if retries == 5:
                             print("Too many failures, aborting.")
@@ -1323,7 +1323,7 @@ class runPerformanceBenchmark(object):
         self.recordCount = self.args.count if self.args.count else 1000000
         self.operationCount = self.args.ops if self.args.ops else 100000
         self.loadThreadCount = int(self.args.tload) if self.args.tload else 32
-        self.runThreadCount = int(self.args.trun) if self.args.trun else 16
+        self.runThreadCount = int(self.args.trun) if self.args.trun else 32
         self.bucketMemory = self.args.memquota
         self.runWorkload = self.args.workload
         self.inputFile = self.args.file
