@@ -5,8 +5,8 @@ COPY --chown=root:root couchbase.repo /etc/yum.repos.d/
 RUN dnf install -y python2 \
     python39 \
     vim \
-    java-17-openjdk-1:17.0.1.0.12-2.el8_5 \
-    java-17-openjdk-devel-1:17.0.1.0.12-2.el8_5 \
+    java-latest-openjdk \
+    java-latest-openjdk-devel \
     maven \
     git \
     wget \
@@ -28,8 +28,6 @@ RUN dnf install -y python2 \
     zip
 RUN alternatives --set python /usr/bin/python2
 RUN alternatives --set python3 /usr/bin/python3.9
-RUN alternatives --set java /usr/lib/jvm/java-17-openjdk-17.0.1.0.12-2.el8_5.x86_64/bin/java
-RUN alternatives --set javac /usr/lib/jvm/java-17-openjdk-17.0.1.0.12-2.el8_5.x86_64/bin/javac
 RUN pip3 install --upgrade pip setuptools wheel
 RUN pip3 install boto boto3 botocore requests dnspython netaddr docutils couchbase netifaces pyvmomi jinja2
 
