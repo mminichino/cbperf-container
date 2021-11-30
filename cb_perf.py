@@ -861,6 +861,7 @@ class runPerformanceBenchmark(object):
         error_count = 0
         fieldName = self.queryField
         idField = self.idField
+        queryBatchSize = self.batchSize
         telemetry = [0 for n in range(3)]
 
         if len(fieldList) == 0:
@@ -884,10 +885,10 @@ class runPerformanceBenchmark(object):
         numRemaining = count
         counter = int(start_num)
         while numRemaining > 0:
-            if numRemaining <= self.batchSize:
+            if numRemaining <= queryBatchSize:
                 runBatchSize = numRemaining
             else:
-                runBatchSize = self.batchSize
+                runBatchSize = queryBatchSize
             numRemaining = numRemaining - runBatchSize
             loop_total_time = 0
             tasks = []
