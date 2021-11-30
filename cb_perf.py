@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3 -W ignore
 
 '''
 Invoke Couchbase Pillow Fight
@@ -33,18 +33,11 @@ from couchbase.exceptions import SDKException
 from couchbase.exceptions import CouchbaseTransientException
 from couchbase.exceptions import CouchbaseFatalException
 from couchbase.exceptions import ParsingFailedException
-
-# try:
-#     from Queue import Queue, Empty, PriorityQueue
-# except ImportError:
-#     from queue import Queue, Empty, PriorityQueue
 import threading
 import multiprocessing
 from queue import Empty
 # threadLock = threading.Lock()
 threadLock = multiprocessing.Lock()
-
-warnings.filterwarnings("ignore")
 
 class randomize(object):
 
@@ -425,17 +418,6 @@ class runPerformanceBenchmark(object):
             if self.makeBucketOnly:
                 sys.exit(0)
 
-        if not self.manualMode or self.loadOnly:
-            print("Beginning data load into bucket %s." % self.bucket)
-            if not self.inputFile:
-                print("Please provide a source JSON file with the file parameter.")
-                sys.exit(1)
-            if not self._bucketExists(self.bucket):
-                self.createBucket()
-            self.dataLoad()
-            if self.loadOnly:
-                sys.exit(0)
-
         if not self.manualMode or self.createIndexFlag:
             if not self.queryField:
                 print("Create index: Query field is required.")
@@ -447,6 +429,17 @@ class runPerformanceBenchmark(object):
             self.createIndex(self.queryField, self.fieldIndex)
             self.createIndex(self.idField, self.idIndex)
             if self.createIndexFlag:
+                sys.exit(0)
+
+        if not self.manualMode or self.loadOnly:
+            print("Beginning data load into bucket %s." % self.bucket)
+            if not self.inputFile:
+                print("Please provide a source JSON file with the file parameter.")
+                sys.exit(1)
+            if not self._bucketExists(self.bucket):
+                self.createBucket()
+            self.dataLoad()
+            if self.loadOnly:
                 sys.exit(0)
 
         if ((not self.manualMode and self.queryField) or (self.queryField and self.runOnly)) and not self.kvOnly:
@@ -636,7 +629,7 @@ class runPerformanceBenchmark(object):
         retries = 0
         while True:
             try:
-                result = cluster.query(query, QueryOptions(metrics=False, adhoc=False, pipeline_batch=128, max_parallelism=4, pipeline_cap=1024, scan_cap=1024))
+                result = cluster.query(query, QueryOptions(metrics=False, adhoc=True, pipeline_batch=128, max_parallelism=4, pipeline_cap=1024, scan_cap=1024))
                 async for row in result:
                     contents.append(row)
                 if len(contents) > 0:
