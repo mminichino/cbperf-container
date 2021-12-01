@@ -1,25 +1,20 @@
-#!/usr/bin/env python3 -W ignore
+#!/usr/bin/env -S python3 -W ignore
 
 '''
-Invoke Couchbase Pillow Fight
+Invoke Custom Couchbase Pillow Fight
 '''
 
 import os
 import sys
 import argparse
 import json
-import re
 from jinja2 import Template
 import time
 import asyncio
 import acouchbase.cluster
 import requests
 from datetime import datetime, timedelta
-from statistics import mean
-import warnings
 import random
-import couchbase
-from couchbase_core.items import Item, ItemOptionDict
 from couchbase_core._libcouchbase import LOCKMODE_EXC, LOCKMODE_NONE, LOCKMODE_WAIT
 from couchbase.cluster import Cluster, ClusterOptions, QueryOptions, ClusterTimeoutOptions
 from couchbase.auth import PasswordAuthenticator
@@ -28,16 +23,15 @@ from couchbase.cluster import QueryIndexManager
 from couchbase.management.buckets import CreateBucketSettings
 from couchbase.exceptions import BucketNotFoundException
 from couchbase.exceptions import CouchbaseException
-from couchbase.exceptions import NetworkException
-from couchbase.exceptions import SDKException
-from couchbase.exceptions import CouchbaseTransientException
-from couchbase.exceptions import CouchbaseFatalException
 from couchbase.exceptions import ParsingFailedException
 import threading
 import multiprocessing
 from queue import Empty
-# threadLock = threading.Lock()
 threadLock = multiprocessing.Lock()
+
+LOAD_DATA = 0
+KV_TEST = 1
+QUERY_TEST = 2
 
 class randomize(object):
 
@@ -376,6 +370,51 @@ class mpAtomicCounter(object):
     def value(self):
         return self.count.value
 
+class mpAtomicIncrement(object):
+
+    def __init__(self, i=1):
+        self.count = multiprocessing.Value('i', i)
+
+    def reset(self, i=1):
+        with self.count.get_lock():
+            self.count.value = i
+
+    @property
+    def next(self):
+        with self.count.get_lock():
+            current = self.count.value
+            self.count.value += 1
+        return current
+
+class rwMixer(object):
+
+    def __init__(self, x=100):
+        percentage = x / 100
+        if percentage > 0:
+            self.factor = 1 / percentage
+        else:
+            self.factor = 0
+
+    def write(self, n=1):
+        if self.factor > 0:
+            remainder = n % self.factor
+        else:
+            remainder = 1
+        if remainder == 0:
+            return True
+        else:
+            return False
+
+    def read(self, n=1):
+        if self.factor > 0:
+            remainder = n % self.factor
+        else:
+            remainder = 1
+        if remainder != 0:
+            return True
+        else:
+            return False
+
 class runPerformanceBenchmark(object):
 
     def __init__(self):
@@ -408,6 +447,12 @@ class runPerformanceBenchmark(object):
         self.fieldIndex = self.bucket + '_ix1'
         self.idIndex = self.bucket + '_id_ix1'
         self.keyArray = []
+        self.hostList = []
+        self.clusterVersion = None
+        self.next_record=mpAtomicIncrement()
+        self.getHostList()
+
+        print("CBPerf Test connected to %s cluster version %s." % (self.host, self.clusterVersion))
 
         if not self.bucketMemory:
             self.getMemQuota()
@@ -431,6 +476,10 @@ class runPerformanceBenchmark(object):
             if self.createIndexFlag:
                 sys.exit(0)
 
+        if self.dryRunFlag:
+            self.dryRun()
+            sys.exit(0)
+
         if not self.manualMode or self.loadOnly:
             print("Beginning data load into bucket %s." % self.bucket)
             if not self.inputFile:
@@ -438,9 +487,26 @@ class runPerformanceBenchmark(object):
                 sys.exit(1)
             if not self._bucketExists(self.bucket):
                 self.createBucket()
-            self.dataLoad()
+            self.writePercent = 100
+            self.runTest(LOAD_DATA)
             if self.loadOnly:
                 sys.exit(0)
+
+        index_data = self.getIndexStats(self.bucket)
+        if self.idIndex not in index_data:
+            print("Database is not properly indexed.")
+
+        print("Waiting for %d documents to be indexed." % self.recordCount)
+        index_total_count = int(self.recordCount) * 2
+        index_wait = 0
+        while index_data[self.idIndex]['num_docs_indexed'] < index_total_count:
+            index_wait += 1
+            if index_wait == 120:
+                print("Timeout waiting for index to be ready.")
+                sys.exit(1)
+            index_data = self.getIndexStats(self.bucket)
+            time.sleep(0.1 * index_wait)
+        print("Done.")
 
         if ((not self.manualMode and self.queryField) or (self.queryField and self.runOnly)) and not self.kvOnly:
             print("Beginning N1QL tests.")
@@ -453,7 +519,7 @@ class runPerformanceBenchmark(object):
                     if self.runWorkload != key:
                         continue
                 self.writePercent = self.scenarioWrite[key]
-                self.queryTest(key)
+                self.runTest(QUERY_TEST)
 
         if not self.manualMode or self.runOnly:
             print("Beginning KV tests.")
@@ -468,7 +534,7 @@ class runPerformanceBenchmark(object):
                     if self.runWorkload != key:
                         continue
                 self.writePercent = self.scenarioWrite[key]
-                self.kvTest(key)
+                self.runTest(KV_TEST)
             if self.runOnly:
                 sys.exit(0)
 
@@ -539,6 +605,41 @@ class runPerformanceBenchmark(object):
             print("Can not get memory quota from the cluster.")
             sys.exit(1)
 
+    def getHostList(self):
+        response = requests.get("http://" + self.host + ":8091" + '/pools/default',
+                                auth=(self.username, self.password))
+        response_json = json.loads(response.text)
+        if 'nodes' not in response_json:
+            print("Can not get cluster information from %s." % self.host)
+            sys.exit(1)
+        if 'version' not in response_json['nodes'][0]:
+            print("Can not determine cluster version.")
+            sys.exit(1)
+        self.clusterVersion = response_json['nodes'][0]['version']
+        for i in range(len(response_json['nodes'])):
+            host_name = response_json['nodes'][i]['configuredHostname']
+            host_name = host_name.split(':')[0]
+            self.hostList.append(host_name)
+
+    def getIndexStats(self, bucket):
+        index_data = {}
+        for i in range(len(self.hostList)):
+            response = requests.get("http://" + self.hostList[i] + ":9102" + '/api/v1/stats/' + bucket,
+                                    auth=(self.username, self.password))
+            response_json = json.loads(response.text)
+            # print(json.dumps(response_json, indent=2))
+            for key in response_json:
+                keyspace, index_name = key.split(':')
+                index_name = index_name.split(' ')[0]
+                if index_name not in index_data:
+                    index_data[index_name] = {}
+                for attribute in response_json[key]:
+                    if attribute not in index_data[index_name]:
+                        index_data[index_name][attribute] = response_json[key][attribute]
+                    else:
+                        index_data[index_name][attribute] += response_json[key][attribute]
+        return index_data
+
     async def dataConnect(self):
         auth = PasswordAuthenticator(self.username, self.password)
         timeouts = ClusterTimeoutOptions(query_timeout=timedelta(seconds=1200), kv_timeout=timedelta(seconds=1200))
@@ -593,7 +694,7 @@ class runPerformanceBenchmark(object):
                 sys.exit(1)
 
             try:
-                result = collection.result = cluster.query(queryText, QueryOptions(metrics=True))
+                result = cluster.query(queryText, QueryOptions(metrics=True))
             except CouchbaseException as e:
                 print("Error running query: %s" % str(e))
                 sys.exit(1)
@@ -615,7 +716,7 @@ class runPerformanceBenchmark(object):
                 sys.exit(1)
 
             try:
-                result = collection.result = cluster.query(queryText, QueryOptions(metrics=True))
+                result = cluster.query(queryText, QueryOptions(metrics=True))
             except CouchbaseException as e:
                 print("Error running query: %s" % str(e))
                 sys.exit(1)
@@ -624,18 +725,18 @@ class runPerformanceBenchmark(object):
             run_time = run_time / 1000000
             print("Drop index \"%s\" execution time: %f secs" % (index, run_time))
 
-    async def cb_query(self, cluster, query):
+    async def cb_query(self, cluster, select, where, value):
         contents = []
         retries = 0
+        query = "SELECT " + select + " FROM pillowfight WHERE " + where + " = \"" + value + "\";"
         while True:
             try:
-                result = cluster.query(query, QueryOptions(metrics=False, adhoc=True, pipeline_batch=128, max_parallelism=4, pipeline_cap=1024, scan_cap=1024))
-                async for row in result:
-                    contents.append(row)
-                if len(contents) > 0:
-                    return contents
-                else:
-                    return True
+                result = cluster.query(query,
+                                       QueryOptions(metrics=False, adhoc=True, pipeline_batch=128, max_parallelism=4,
+                                                    pipeline_cap=1024, scan_cap=1024))
+                async for item in result:
+                    contents.append(item)
+                return contents
             except ParsingFailedException as e:
                 print("Query syntax error: %s", str(e))
                 sys.exit(1)
@@ -1057,6 +1158,7 @@ class runPerformanceBenchmark(object):
         self.percentage = 0
         self.randomize_num_generated = mpAtomicCounter(0)
         self.randomize_queue_size = mpAtomicCounter(0)
+        self.next_record.reset()
 
     def randomizeThread(self, thread_num, json_block, count):
         retries = 1
@@ -1339,6 +1441,212 @@ class runPerformanceBenchmark(object):
         print("Test completed in %s" % time.strftime("%H hours %M minutes %S seconds.", time.gmtime(end_time - start_time)))
         self.runReset()
 
+    def dryRun(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        record_number = 1
+        retries = 0
+        index_wait = 0
+
+        print("Beginning dry run mode.")
+
+        try:
+            with open(self.inputFile, 'r') as inputFile:
+                inputFileJson = json.load(inputFile)
+            inputFile.close()
+        except OSError as e:
+            print("Can not read input file: %s" % str(e))
+            sys.exit(1)
+
+        try:
+            cluster, bucket = loop.run_until_complete(self.dataConnect())
+            collection = bucket.default_collection()
+        except Exception as e:
+            print("testInstance: error connecting to couchbase: %s" % str(e))
+            sys.exit(1)
+
+        try:
+            r = randomize()
+            r.prepareTemplate(inputFileJson)
+        except Exception as e:
+            print("Can not load JSON template: %s." % str(e))
+            sys.exit(1)
+
+        record_id = str(format(record_number, '032'))
+
+        index_data = self.getIndexStats(self.bucket)
+        if self.idIndex not in index_data:
+            print("Database is not properly indexed.")
+
+        current_doc_count = index_data[self.idIndex]['num_docs_indexed']
+
+        if current_doc_count > 0:
+            print("Warning: database not empty, %d docs already indexed." % current_doc_count)
+
+        print("Attempting to insert record %d..." % record_number)
+        jsonDoc = r.processTemplate()
+        jsonDoc[self.idField] = record_id
+        result = loop.run_until_complete(self.cb_upsert(collection, record_id, jsonDoc))
+
+        print("Insert complete.")
+        print(result)
+
+        print("Attempting to read record %d..." % record_number)
+        result = loop.run_until_complete(self.cb_get(collection, record_id))
+
+        print("Read complete.")
+        print(json.dumps(result, indent=2))
+
+        print("Waiting for new document to be indexed.")
+        while index_data[self.idIndex]['num_docs_indexed'] == current_doc_count:
+            index_wait += 1
+            if index_wait == 120:
+                print("Timeout waiting for index to be ready.")
+                sys.exit(1)
+            index_data = self.getIndexStats(self.bucket)
+            time.sleep(0.1 * index_wait)
+        print("Done.")
+
+        while retries <= 5:
+            print("Attempting to query record %d retry %d..." % (record_number, retries))
+            result = loop.run_until_complete(self.cb_query(cluster, self.queryField, self.idField, record_id))
+
+            if len(result) == 0:
+                retries += 1
+                print("No rows returned, retrying...")
+                time.sleep(0.1 * retries)
+                continue
+            else:
+                break
+
+        if len(result) > 0:
+            print("Query complete.")
+            for i in range(len(result)):
+                print(json.dumps(result[i], indent=2))
+        else:
+            print("Could not query record %d." % record_number)
+            return
+
+        print("Cleaning up.")
+        self.dropIndex(self.fieldIndex)
+        self.dropIndex(self.idIndex)
+        self.deleteBucket()
+
+    def testInstance(self, json_block, mode=0, maximum=1, instance=1):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        telemetry = [0 for n in range(3)]
+        tasks = []
+        opSelect = rwMixer(self.writePercent)
+        runBatchSize = self.batchSize
+
+        if self.debug:
+            print("Starting test instance %d" % instance)
+
+        try:
+            cluster, bucket = loop.run_until_complete(self.dataConnect())
+            collection = bucket.default_collection()
+        except Exception as e:
+            print("testInstance: error connecting to couchbase: %s" % str(e))
+            sys.exit(1)
+
+        try:
+            r = randomize()
+            r.prepareTemplate(json_block)
+        except Exception as e:
+            print("Can not load JSON template: %s." % str(e))
+            sys.exit(1)
+
+        if self.debug:
+            print("Test instance %d connected, starting..." % instance)
+
+        while True:
+            tasks.clear()
+            begin_time = time.time()
+            for y in range(int(runBatchSize)):
+                record_number = self.next_record.next
+                if record_number > maximum:
+                    break
+                record_id = str(format(record_number, '032'))
+                if opSelect.write(record_number):
+                    jsonDoc = r.processTemplate()
+                    tasks.append(self.cb_upsert(collection, record_id, jsonDoc))
+                else:
+                    if mode == QUERY_TEST:
+                        tasks.append(self.cb_query(cluster, self.queryField, self.idField, record_id))
+                    else:
+                        tasks.append(self.cb_get(collection, record_id))
+            if len(tasks) > 0:
+                try:
+                    result = loop.run_until_complete(asyncio.gather(*tasks))
+                except Exception as e:
+                    print("runUpdateQuery: %s" % str(e))
+                    sys.exit(1)
+                end_time = time.time()
+                loop_total_time = end_time - begin_time
+                telemetry[0] = instance
+                telemetry[1] = len(tasks)
+                telemetry[2] = loop_total_time
+                telemetry_packet = ':'.join(str(i) for i in telemetry)
+                self.telemetry_queue.put(telemetry_packet)
+                if self.debug:
+                    myDebug.writeQueryDebug(telemetry, instance)
+            else:
+                break
+
+        loop.close()
+        if self.debug:
+            print("Query thread %d complete, exiting." % instance)
+
+    def runTest(self, mode=0):
+        telemetry = [0 for n in range(3)]
+
+        if mode == LOAD_DATA:
+            operation_count = int(self.recordCount)
+            run_threads = int(self.loadThreadCount)
+        else:
+            operation_count = int(self.operationCount)
+            run_threads = int(self.runThreadCount)
+
+        try:
+            with open(self.inputFile, 'r') as inputFile:
+                inputFileData = inputFile.read()
+            inputFile.close()
+        except OSError as e:
+            print("Can not open input file: %s" % str(e))
+            sys.exit(1)
+
+        try:
+            inputFileJson = json.loads(inputFileData)
+        except Exception as e:
+            print("Can not process json input file: %s" % str(e))
+            sys.exit(1)
+
+        statusThread = multiprocessing.Process(target=self.printStatusThread, args=(operation_count, run_threads,))
+        statusThread.daemon = True
+        statusThread.start()
+
+        print("Starting test with %s records - %d%% get, %d%% update"
+              % ('{:,}'.format(operation_count), 100 - self.writePercent, self.writePercent))
+        start_time = time.perf_counter()
+
+        instances = [multiprocessing.Process(target=self.testInstance, args=(inputFileJson, mode, operation_count, n)) for n in range(run_threads)]
+        for p in instances:
+            p.daemon = True
+            p.start()
+
+        for p in instances:
+            p.join()
+
+        end_time = time.perf_counter()
+        telemetry[0] = 256
+        telemetry_packet = ':'.join(str(i) for i in telemetry)
+        self.telemetry_queue.put(telemetry_packet)
+        statusThread.join()
+
+        print("Test completed in %s" % time.strftime("%H hours %M minutes %S seconds.", time.gmtime(end_time - start_time)))
+        self.runReset()
+
     def parse_args(self):
         parser = argparse.ArgumentParser()
         parser.add_argument('--user', action = 'store')
@@ -1367,6 +1675,7 @@ class runPerformanceBenchmark(object):
         parser.add_argument('--dropbucket', action='store_true')
         parser.add_argument('--debug', action='store_true')
         parser.add_argument('--random', action='store_true')
+        parser.add_argument('--dryrun', action='store_true')
         self.args = parser.parse_args()
         self.username = self.args.user if self.args.user else "Administrator"
         self.password = self.args.password if self.args.password else "password"
@@ -1375,7 +1684,7 @@ class runPerformanceBenchmark(object):
         self.recordCount = self.args.count if self.args.count else 1000000
         self.operationCount = self.args.ops if self.args.ops else 100000
         self.loadThreadCount = int(self.args.tload) if self.args.tload else 32
-        self.runThreadCount = int(self.args.trun) if self.args.trun else 16
+        self.runThreadCount = int(self.args.trun) if self.args.trun else os.cpu_count() * 2
         self.bucketMemory = self.args.memquota
         self.runWorkload = self.args.workload
         self.inputFile = self.args.file
@@ -1394,6 +1703,7 @@ class runPerformanceBenchmark(object):
         self.dropBucketOnly = self.args.dropbucket
         self.debug = self.args.debug
         self.randomFlag = self.args.random
+        self.dryRunFlag = self.args.dryrun
 
 def main():
     runPerformanceBenchmark()
