@@ -38,7 +38,151 @@ QUERY_TEST = 2
 class randomize(object):
 
     def __init__(self):
-        self.streetNames = [
+        self.nowTime = datetime.now()
+        self.datetimestr = self.nowTime.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _randomNumber(self, n):
+        min_lc = ord(b'0')
+        len_lc = 10
+        ba = bytearray(random.getrandbits(8) for i in range(n))
+        for i, b in enumerate(ba):
+            ba[i] = min_lc + b % len_lc
+        return ba.decode('utf-8')
+
+    def _randomStringLower(self, n):
+        min_lc = ord(b'a')
+        len_lc = 26
+        ba = bytearray(random.getrandbits(8) for i in range(n))
+        for i, b in enumerate(ba):
+            ba[i] = min_lc + b % len_lc
+        return ba.decode('utf-8')
+
+    def _randomStringUpper(self, n):
+        min_lc = ord(b'A')
+        len_lc = 26
+        ba = bytearray(random.getrandbits(8) for i in range(n))
+        for i, b in enumerate(ba):
+            ba[i] = min_lc + b % len_lc
+        return ba.decode('utf-8')
+
+    def _randomHash(self, n):
+        ba = bytearray(random.getrandbits(8) for i in range(n))
+        for i, b in enumerate(ba):
+            min_lc = ord(b'0') if b < 85 else ord(b'A') if b < 170 else ord(b'a')
+            len_lc = 10 if b < 85 else 26
+            ba[i] = min_lc + b % len_lc
+        return ba.decode('utf-8')
+
+    @property
+    def creditCard(self):
+        return '-'.join(self._randomNumber(4) for _ in range(4))
+
+    @property
+    def socialSecurityNumber(self):
+        return '-'.join([self._randomNumber(3), self._randomNumber(2), self._randomNumber(4)])
+
+    @property
+    def threeDigits(self):
+        return self._randomNumber(3)
+
+    @property
+    def fourDigits(self):
+        return self._randomNumber(4)
+
+    @property
+    def zipCode(self):
+        return self._randomNumber(5)
+
+    @property
+    def accountNumner(self):
+        return self._randomNumber(10)
+
+    @property
+    def numericSequence(self):
+        return self._randomNumber(16)
+
+    @property
+    def dollarAmount(self):
+        value = random.getrandbits(8) % 5 + 1
+        return self._randomNumber(value) + '.' + self._randomNumber(2)
+
+    @property
+    def hashCode(self):
+        return self._randomHash(16)
+
+    @property
+    def firstName(self):
+        data = [
+            'James',
+            'Robert',
+            'John',
+            'Michael',
+            'William',
+            'David',
+            'Richard',
+            'Joseph',
+            'Thomas',
+            'Charles',
+            'Mary',
+            'Patricia',
+            'Jennifer',
+            'Linda',
+            'Elizabeth',
+            'Barbara',
+            'Susan',
+            'Jessica',
+            'Sarah',
+            'Karen',
+        ]
+        rand_gen = fastRandom(len(data), 0)
+        return data[rand_gen.value]
+
+    @property
+    def lastName(self):
+        data = [
+            'Smith',
+            'Johnson',
+            'Williams',
+            'Brown',
+            'Jones',
+            'Garcia',
+            'Miller',
+            'Davis',
+            'Rodriguez',
+            'Martinez',
+            'Hernandez',
+            'Lopez',
+            'Gonzalez',
+            'Wilson',
+            'Anderson',
+            'Thomas',
+            'Taylor',
+            'Moore',
+            'Jackson',
+            'Martin',
+        ]
+        rand_gen = fastRandom(len(data), 0)
+        return data[rand_gen.value]
+
+    @property
+    def streetType(self):
+        data = [
+            'Street',
+            'Road',
+            'Lane',
+            'Court',
+            'Avenue',
+            'Parkway',
+            'Trail',
+            'Way',
+            'Drive',
+        ]
+        rand_gen = fastRandom(len(data), 0)
+        return data[rand_gen.value]
+
+    @property
+    def streetName(self):
+        data = [
             'Main',
             'Church',
             'Liberty',
@@ -60,20 +204,16 @@ class randomize(object):
             '2nd',
             '3rd',
         ]
-        self.streetNameLast = len(self.streetNames) - 1
-        self.streetTypes = [
-            'Street',
-            'Road',
-            'Lane',
-            'Court',
-            'Avenue',
-            'Parkway',
-            'Trail',
-            'Way',
-            'Drive',
-        ]
-        self.streetTypeLast = len(self.streetTypes) - 1
-        self.cityNames = [
+        rand_gen = fastRandom(len(data), 0)
+        return data[rand_gen.value]
+
+    @property
+    def addressLine(self):
+        return ' '.join([self._randomNumber(4), self.streetName, self.streetType])
+
+    @property
+    def cityName(self):
+        data = [
             'Mannorburg',
             'New Highworth',
             'Salttown',
@@ -91,8 +231,12 @@ class randomize(object):
             'Trinsdale',
             'Wingview',
         ]
-        self.cityNameLast = len(self.cityNames) - 1
-        self.stateNames = [
+        rand_gen = fastRandom(len(data), 0)
+        return data[rand_gen.value]
+
+    @property
+    def stateName(self):
+        data = [
             'AL',
             'AK',
             'AZ',
@@ -149,168 +293,54 @@ class randomize(object):
             'WI',
             'WY',
         ]
-        self.stateNameLast = len(self.streetNames) - 1
-        self.firstNameList = [
-            'James',
-            'Robert',
-            'John',
-            'Michael',
-            'William',
-            'David',
-            'Richard',
-            'Joseph',
-            'Thomas',
-            'Charles',
-            'Mary',
-            'Patricia',
-            'Jennifer',
-            'Linda',
-            'Elizabeth',
-            'Barbara',
-            'Susan',
-            'Jessica',
-            'Sarah',
-            'Karen',
-        ]
-        self.firstNameLast = len(self.firstNameList) - 1
-        self.lastNameList = [
-            'Smith',
-            'Johnson',
-            'Williams',
-            'Brown',
-            'Jones',
-            'Garcia',
-            'Miller',
-            'Davis',
-            'Rodriguez',
-            'Martinez',
-            'Hernandez',
-            'Lopez',
-            'Gonzalez',
-            'Wilson',
-            'Anderson',
-            'Thomas',
-            'Taylor',
-            'Moore',
-            'Jackson',
-            'Martin',
-        ]
-        self.lastNameLast = len(self.lastNameList) - 1
-        self.nowTime = datetime.now()
-        self.datetimestr = self.nowTime.strftime("%Y-%m-%d %H:%M:%S")
+        rand_gen = fastRandom(len(data), 0)
+        return data[rand_gen.value]
 
-    def _randomNumber(self, n):
-        min_lc = ord(b'0')
-        len_lc = 10
-        ba = bytearray(random.getrandbits(8) for i in range(n))
-        for i, b in enumerate(ba):
-            ba[i] = min_lc + b % len_lc
-        return ba.decode('utf-8')
-
-    def _randomStringLower(self, n):
-        min_lc = ord(b'a')
-        len_lc = 26
-        ba = bytearray(random.getrandbits(8) for i in range(n))
-        for i, b in enumerate(ba):
-            ba[i] = min_lc + b % len_lc
-        return ba.decode('utf-8')
-
-    def _randomStringUpper(self, n):
-        min_lc = ord(b'A')
-        len_lc = 26
-        ba = bytearray(random.getrandbits(8) for i in range(n))
-        for i, b in enumerate(ba):
-            ba[i] = min_lc + b % len_lc
-        return ba.decode('utf-8')
-
-    def _randomHash(self, n):
-        ba = bytearray(random.getrandbits(8) for i in range(n))
-        for i, b in enumerate(ba):
-            min_lc = ord(b'0') if b < 85 else ord(b'A') if b < 170 else ord(b'a')
-            len_lc = 10 if b < 85 else 26
-            ba[i] = min_lc + b % len_lc
-        return ba.decode('utf-8')
-
-    def creditCard(self):
-        return self._randomNumber(4) + '-' + self._randomNumber(4) + '-' + self._randomNumber(4) + '-' + self._randomNumber(4)
-
-    def socialSecurityNumber(self):
-        return self._randomNumber(3) + '-' + self._randomNumber(2) + '-' + self._randomNumber(4)
-
-    def threeDigits(self):
-        return self._randomNumber(3)
-
-    def fourDigits(self):
-        return self._randomNumber(4)
-
-    def zipCode(self):
-        return self._randomNumber(5)
-
-    def accountNumner(self):
-        return self._randomNumber(10)
-
-    def numericSequence(self):
-        return self._randomNumber(16)
-
-    def dollarAmount(self):
-        value = random.getrandbits(8) % 5 + 1
-        return self._randomNumber(value) + '.' + self._randomNumber(2)
-
-    def hashCode(self):
-        return self._randomHash(16)
-
-    def firstName(self):
-        value = random.getrandbits(8) % self.firstNameLast
-        return self.firstNameList[value]
-
-    def lastName(self):
-        value = random.getrandbits(8) % self.lastNameLast
-        return self.lastNameList[value]
-
-    def addressLine(self):
-        first_value = random.getrandbits(8) % self.streetNameLast
-        second_value = random.getrandbits(8) % self.streetTypeLast
-        return self._randomNumber(4) + ' ' + self.streetNames[first_value] + ' ' + self.streetTypes[second_value]
-
-    def cityName(self):
-        value = random.getrandbits(8) % self.cityNameLast
-        return self.cityNames[value]
-
-    def stateName(self):
-        value = random.getrandbits(8) % self.stateNameLast
-        return self.stateNames[value]
-
+    @property
     def phoneNumber(self):
-        return self._randomNumber(3) + '-' + self._randomNumber(3) + '-' + self._randomNumber(4)
+        return '-'.join([self._randomNumber(3), self._randomNumber(3), self._randomNumber(4)])
 
+    @property
     def dateCode(self):
         return self.datetimestr
+
+    def testAll(self):
+        print("Credit Card: " + self.creditCard)
+        print("SSN        : " + self.socialSecurityNumber)
+        print("Four Digits: " + self.fourDigits)
+        print("ZIP Code   : " + self.zipCode)
+        print("Account    : " + self.accountNumner)
+        print("Dollar     : " + self.dollarAmount)
+        print("Sequence   : " + self.numericSequence)
+        print("Hash       : " + self.hashCode)
+        print("Address    : " + self.addressLine)
+        print("City       : " + self.cityName)
+        print("State      : " + self.stateName)
+        print("First      : " + self.firstName)
+        print("Last       : " + self.lastName)
+        print("Phone      : " + self.phoneNumber)
+        print("Date       : " + self.dateCode)
 
     def prepareTemplate(self, json_block):
         self.template = json.dumps(json_block)
         self.compiled = Template(self.template)
 
     def processTemplate(self):
-        creditcard = self.creditCard()
-        ssn = self.socialSecurityNumber()
-        randfour = self.fourDigits()
-        zipcode = self.zipCode()
-        randaccount = self.accountNumner()
-        randdollar = self.dollarAmount()
-        randid = self.numericSequence()
-        randhash = self.hashCode()
-        randaddress = self.addressLine()
-        randcity = self.cityName()
-        randstate = self.stateName()
-        randfirst = self.firstName()
-        randlast = self.lastName()
-        randphone = self.phoneNumber()
-        randdate = self.dateCode()
-
-        formattedBlock = self.compiled.render(date_time=randdate, credit_card=creditcard, social=ssn, rand_four=randfour,
-                                  rand_account=randaccount, rand_id=randid, zip_code=zipcode, rand_dollar=randdollar,
-                                  rand_hash=randhash, rand_address=randaddress, rand_city=randcity, rand_state=randstate,
-                                  rand_first=randfirst, rand_last=randlast, rand_phone=randphone)
+        formattedBlock = self.compiled.render(date_time=self.dateCode,
+                                              credit_card=self.creditCard,
+                                              social=self.socialSecurityNumber,
+                                              rand_four=self.fourDigits,
+                                              rand_account=self.accountNumner,
+                                              rand_id=self.numericSequence,
+                                              zip_code=self.zipCode,
+                                              rand_dollar=self.dollarAmount,
+                                              rand_hash=self.hashCode,
+                                              rand_address=self.addressLine,
+                                              rand_city=self.cityName,
+                                              rand_state=self.stateName,
+                                              rand_first=self.firstName,
+                                              rand_last=self.lastName,
+                                              rand_phone=self.phoneNumber)
         finished = formattedBlock.encode('ascii')
         jsonBlock = json.loads(finished)
         return jsonBlock
@@ -419,15 +449,16 @@ class rwMixer(object):
 
 class fastRandom(object):
 
-    def __init__(self, x=256):
+    def __init__(self, x=256, start=1):
         self.max_value = x
         self.bits = self.max_value.bit_length()
+        self.start_value = start
 
     @property
     def value(self):
         rand_number = random.getrandbits(self.bits) % self.max_value
-        if rand_number == 0:
-            rand_number = 1
+        if rand_number < self.start_value:
+            rand_number = self.start_value
         if rand_number > self.max_value:
             rand_number = self.max_value
         return rand_number
