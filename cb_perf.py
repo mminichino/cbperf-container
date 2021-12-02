@@ -26,7 +26,7 @@ from couchbase.exceptions import CouchbaseException
 from couchbase.exceptions import ParsingFailedException
 import threading
 import multiprocessing
-from queue import Empty
+from queue import Empty, Full
 import psutil
 threadLock = multiprocessing.Lock()
 
@@ -1448,26 +1448,39 @@ class runPerformanceBenchmark(object):
         self.runReset()
 
     def dynamicStatusThread(self):
+        entry = ""
         threadVector = [0 for i in range(257)]
-        return_telemetry = [0 for n in range(5)]
+        return_telemetry = [0 for n in range(10)]
         threadVectorSize = 1
         totalTps = 0
         totalOps = 0
         totalCpu = 0
-        totalMem = 0
-        entryOps = 0
         averageTps = 0
         maxTps = 0
+        maxTpsThreads = 0
         totalTime = 0
         averageTime = 0
         averageCpu = 0
-        averageMem = 0
         maxTime = 0
         sampleCount = 1
         decTrend = False
-        lastTps = 0
+        mem_usage = psutil.virtual_memory()
         tps_time_marker = time.perf_counter()
         loop_time_marker = tps_time_marker
+
+        def exitFunction():
+            return_telemetry[0] = 256
+            return_telemetry[1] = totalOps
+            return_telemetry[2] = maxTime
+            return_telemetry[3] = averageTime
+            return_telemetry[4] = maxTps
+            return_telemetry[5] = averageTps
+            return_telemetry[6] = averageCpu
+            return_telemetry[7] = mem_usage.percent
+            return_telemetry[8] = decTrend
+            return_telemetry[9] = maxTpsThreads
+            return_telemetry_packet = ':'.join(str(i) for i in return_telemetry)
+            self.telemetry_return.put(return_telemetry_packet)
 
         if self.debug:
             myDebug = debugOutput()
@@ -1479,9 +1492,7 @@ class runPerformanceBenchmark(object):
                 loop_time_check = time.perf_counter()
                 loop_time_diff = loop_time_check - loop_time_marker
                 if loop_time_diff > 5:
-                    return_telemetry[0] = 256
-                    return_telemetry_packet = ':'.join(str(i) for i in return_telemetry)
-                    self.telemetry_return.put(return_telemetry_packet)
+                    exitFunction()
                     return
                 else:
                     continue
@@ -1509,6 +1520,7 @@ class runPerformanceBenchmark(object):
                 sampleCount += 1
                 if trans_per_sec > maxTps:
                     maxTps = trans_per_sec
+                    maxTpsThreads = threadVectorSize
                     tps_time_marker = time.perf_counter()
                 else:
                     tps_check_time = time.perf_counter()
@@ -1524,21 +1536,10 @@ class runPerformanceBenchmark(object):
                     myDebug.writeStatDebug(text)
                 loop_time_marker = time.perf_counter()
                 if decTrend or maxTime > 1 or averageCpu > 90 or mem_usage.percent > 70:
-                    return_telemetry[0] = 256
-                    return_telemetry[1] = maxTime
-                    return_telemetry[2] = averageCpu
-                    return_telemetry[3] = mem_usage.percent
-                    return_telemetry[4] = decTrend
-                    return_telemetry_packet = ':'.join(str(i) for i in return_telemetry)
-                    self.telemetry_return.put(return_telemetry_packet)
+                    exitFunction()
+                    return
             if int(telemetry[0]) == 256:
-                sys.stdout.write("\033[K")
-                print("%d operations completed." % totalOps)
-                print("Test Done.")
-                print("%d average TPS." % averageTps)
-                print("%d maximum TPS." % maxTps)
-                print("%.6f average time." % averageTime)
-                print("%.6f maximum time." % maxTime)
+                exitFunction()
                 return
 
     def runCalibration(self, mode=1):
@@ -1548,6 +1549,13 @@ class runPerformanceBenchmark(object):
         return_telemetry = []
         seconds = 0
         time_marker = time.perf_counter()
+
+        def emptyQueue():
+            while True:
+                try:
+                    data = self.telemetry_queue.get(block=False)
+                except Empty:
+                    break
 
         try:
             with open(self.inputFile, 'r') as inputFile:
@@ -1576,6 +1584,15 @@ class runPerformanceBenchmark(object):
             except Empty:
                 pass
             if n == 255:
+                telemetry[0] = 256
+                telemetry_packet = ':'.join(str(i) for i in telemetry)
+                while True:
+                    try:
+                        self.telemetry_queue.put(telemetry_packet, block=False)
+                        break
+                    except Full:
+                        emptyQueue()
+                        continue
                 break
             time.sleep(5.0)
 
@@ -1583,21 +1600,25 @@ class runPerformanceBenchmark(object):
             p.terminate()
             p.join()
 
-        telemetry[0] = 256
-        telemetry_packet = ':'.join(str(i) for i in telemetry)
-        self.telemetry_queue.put(telemetry_packet)
+        emptyQueue()
         statusThread.join()
         end_time = time.perf_counter()
 
+        sys.stdout.write("\033[K")
         print("Max threshold reached.")
-        print("%d instances." % n)
-        if len(return_telemetry) >= 5:
-            print("=> %.6f max time." % float(return_telemetry[1]))
-            print("=> %.1f average CPU." % float(return_telemetry[2]))
-            print("=> %.1f average memory." % float(return_telemetry[3]))
-            print("=> Lag trend %s." % return_telemetry[4])
+        print(">> %d instances <<" % n)
+        if len(return_telemetry) >= 9:
+            print("=> %d total ops." % int(return_telemetry[1]))
+            print("=> %.6f max time." % float(return_telemetry[2]))
+            print("=> %.6f average time." % float(return_telemetry[3]))
+            print("=> %d max TPS." % int(return_telemetry[4]))
+            print("=> %.0f average TPS." % float(return_telemetry[5]))
+            print("=> %.1f average CPU." % float(return_telemetry[6]))
+            print("=> %.1f used memory." % float(return_telemetry[7]))
+            print("=> Lag trend %s." % return_telemetry[8])
+            print("=> Max TPS threads %d <<<" % return_telemetry[9])
         else:
-            print("Instance limit reached.")
+            print("Abnormal termination.")
 
         print("Calibration completed in %s" % time.strftime("%H hours %M minutes %S seconds.",
                                                      time.gmtime(end_time - start_time)))
