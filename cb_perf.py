@@ -27,6 +27,7 @@ from couchbase.exceptions import ParsingFailedException
 import threading
 import multiprocessing
 from queue import Empty
+import psutil
 threadLock = multiprocessing.Lock()
 
 LOAD_DATA = 0
@@ -426,6 +427,7 @@ class runPerformanceBenchmark(object):
         self.randomize_queue = multiprocessing.Queue()
         # self.randomize_control = Queue()
         self.telemetry_queue = multiprocessing.Queue()
+        self.telemetry_return = multiprocessing.Queue()
         # self.telemetry_queue = {}
         # self.telemetry_control = Queue()
         self.randomize_thread_count = round(self.cpu_count / 2)
@@ -478,6 +480,10 @@ class runPerformanceBenchmark(object):
 
         if self.dryRunFlag:
             self.dryRun()
+            sys.exit(0)
+
+        if self.runCpuModelFlag:
+            self.cpuModel()
             sys.exit(0)
 
         if not self.manualMode or self.loadOnly:
@@ -753,7 +759,7 @@ class runPerformanceBenchmark(object):
         while True:
             try:
                 result = await collection.upsert(key, document)
-                return result.cas
+                return result
             except Exception as e:
                 if retries == self.maxRetries:
                     raise Exception("cb_upsert SDK error: %s" % str(e))
@@ -765,7 +771,7 @@ class runPerformanceBenchmark(object):
     def cb_upsert_s(self, collection, key, document):
         try:
             result = collection.upsert(key, document)
-            return result.cas
+            return result
         except CouchbaseException as e:
             print("Query error: %s", str(e))
             return False
@@ -775,7 +781,7 @@ class runPerformanceBenchmark(object):
         while True:
             try:
                 result = await collection.get(key)
-                return result.content_as[dict]
+                return result
             except Exception as e:
                 if retries == self.maxRetries:
                     raise Exception("cb_get SDK error: %s" % str(e))
@@ -787,7 +793,7 @@ class runPerformanceBenchmark(object):
     def cb_get_s(self, collection, key):
         try:
             result = collection.get(key)
-            return result.content_as[dict]
+            return result
         except CouchbaseException as e:
             print("Query error: %s", str(e))
             return False
@@ -1441,6 +1447,178 @@ class runPerformanceBenchmark(object):
         print("Test completed in %s" % time.strftime("%H hours %M minutes %S seconds.", time.gmtime(end_time - start_time)))
         self.runReset()
 
+    def dynamicStatusThread(self):
+        threadVector = [0 for i in range(257)]
+        return_telemetry = [0 for n in range(5)]
+        threadVectorSize = 1
+        totalTps = 0
+        totalOps = 0
+        totalCpu = 0
+        totalMem = 0
+        entryOps = 0
+        averageTps = 0
+        maxTps = 0
+        totalTime = 0
+        averageTime = 0
+        averageCpu = 0
+        averageMem = 0
+        maxTime = 0
+        sampleCount = 1
+        decTrend = False
+        lastTps = 0
+        tps_time_marker = time.perf_counter()
+        loop_time_marker = tps_time_marker
+
+        if self.debug:
+            myDebug = debugOutput()
+
+        while True:
+            try:
+                entry = self.telemetry_queue.get(block=False)
+            except Empty:
+                loop_time_check = time.perf_counter()
+                loop_time_diff = loop_time_check - loop_time_marker
+                if loop_time_diff > 5:
+                    return_telemetry[0] = 256
+                    return_telemetry_packet = ':'.join(str(i) for i in return_telemetry)
+                    self.telemetry_return.put(return_telemetry_packet)
+                    return
+                else:
+                    continue
+            telemetry = entry.split(":")
+            if self.debug:
+                myDebug.writeTelemetryDebug(entry)
+            if int(telemetry[0]) < 256:
+                entryOps = int(telemetry[1])
+                time_delta = float(telemetry[2])
+                reporting_thread = int(telemetry[0])
+                if reporting_thread >= threadVectorSize:
+                    threadVectorSize = reporting_thread + 1
+                threadVector[reporting_thread] = round(entryOps / time_delta)
+                totalOps += entryOps
+                trans_per_sec = sum(threadVector)
+                op_time_delta = time_delta / entryOps
+                totalTps = totalTps + trans_per_sec
+                totalTime = totalTime + op_time_delta
+                averageTps = totalTps / sampleCount
+                averageTime = totalTime / sampleCount
+                cpu_usage = psutil.cpu_percent()
+                totalCpu = totalCpu + cpu_usage
+                averageCpu = totalCpu / sampleCount
+                mem_usage = psutil.virtual_memory()
+                sampleCount += 1
+                if trans_per_sec > maxTps:
+                    maxTps = trans_per_sec
+                    tps_time_marker = time.perf_counter()
+                else:
+                    tps_check_time = time.perf_counter()
+                    if (tps_check_time - tps_time_marker) > 120:
+                        decTrend = True
+                if time_delta > maxTime:
+                    maxTime = time_delta
+                end_char = '\r'
+                print("Operation %d with %d threads, %.6f time, %d TPS, CPU %.1f%%, Mem %.1f    " %
+                      (totalOps, threadVectorSize, op_time_delta, trans_per_sec, averageCpu, mem_usage.percent), end=end_char)
+                if self.debug:
+                    text = "%d %d %d %d %d %.6f %d" % (reporting_thread, entryOps, totalOps, totalTps, averageTps, averageTime, sampleCount)
+                    myDebug.writeStatDebug(text)
+                loop_time_marker = time.perf_counter()
+                if decTrend or maxTime > 1 or averageCpu > 90 or mem_usage.percent > 70:
+                    return_telemetry[0] = 256
+                    return_telemetry[1] = maxTime
+                    return_telemetry[2] = averageCpu
+                    return_telemetry[3] = mem_usage.percent
+                    return_telemetry[4] = decTrend
+                    return_telemetry_packet = ':'.join(str(i) for i in return_telemetry)
+                    self.telemetry_return.put(return_telemetry_packet)
+            if int(telemetry[0]) == 256:
+                sys.stdout.write("\033[K")
+                print("%d operations completed." % totalOps)
+                print("Test Done.")
+                print("%d average TPS." % averageTps)
+                print("%d maximum TPS." % maxTps)
+                print("%.6f average time." % averageTime)
+                print("%.6f maximum time." % maxTime)
+                return
+
+    def runCalibration(self, mode=1):
+        telemetry = [0 for n in range(3)]
+        n = -1
+        scale = []
+        return_telemetry = []
+        seconds = 0
+        time_marker = time.perf_counter()
+
+        try:
+            with open(self.inputFile, 'r') as inputFile:
+                inputFileJson = json.load(inputFile)
+            inputFile.close()
+        except OSError as e:
+            print("Can not read input file: %s" % str(e))
+            sys.exit(1)
+
+        statusThread = multiprocessing.Process(target=self.dynamicStatusThread, args=())
+        statusThread.daemon = True
+        statusThread.start()
+
+        print("Beginning calibration...")
+        start_time = time.perf_counter()
+        while True:
+            n += 1
+            scale.append(multiprocessing.Process(target=self.testInstance, args=(inputFileJson, mode, 0, n)))
+            scale[n].daemon = True
+            scale[n].start()
+            try:
+                entry = self.telemetry_return.get(block=False)
+                return_telemetry = entry.split(":")
+                if int(return_telemetry[0]) == 256:
+                    break
+            except Empty:
+                pass
+            if n == 255:
+                break
+            time.sleep(5.0)
+
+        for p in scale:
+            p.terminate()
+            p.join()
+
+        telemetry[0] = 256
+        telemetry_packet = ':'.join(str(i) for i in telemetry)
+        self.telemetry_queue.put(telemetry_packet)
+        statusThread.join()
+        end_time = time.perf_counter()
+
+        print("Max threshold reached.")
+        print("%d instances." % n)
+        if len(return_telemetry) >= 5:
+            print("=> %.6f max time." % float(return_telemetry[1]))
+            print("=> %.1f average CPU." % float(return_telemetry[2]))
+            print("=> %.1f average memory." % float(return_telemetry[3]))
+            print("=> Lag trend %s." % return_telemetry[4])
+        else:
+            print("Instance limit reached.")
+
+        print("Calibration completed in %s" % time.strftime("%H hours %M minutes %S seconds.",
+                                                     time.gmtime(end_time - start_time)))
+
+    def cpuModel(self):
+        print("Beginning CPU model mode.")
+
+        print("Initiating data load.")
+        # self.writePercent = 100
+        # self.runTest(LOAD_DATA)
+        print("Data load complete.")
+
+        print("Starting KV calibration.")
+        self.runCalibration(KV_TEST)
+        print("Done.")
+
+        print("Cleaning up.")
+        # self.dropIndex(self.fieldIndex)
+        # self.dropIndex(self.idIndex)
+        # self.deleteBucket()
+
     def dryRun(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -1489,13 +1667,13 @@ class runPerformanceBenchmark(object):
         result = loop.run_until_complete(self.cb_upsert(collection, record_id, jsonDoc))
 
         print("Insert complete.")
-        print(result)
+        print(result.cas)
 
         print("Attempting to read record %d..." % record_number)
         result = loop.run_until_complete(self.cb_get(collection, record_id))
 
         print("Read complete.")
-        print(json.dumps(result, indent=2))
+        print(json.dumps(result.content_as[dict], indent=2))
 
         print("Waiting for new document to be indexed.")
         while index_data[self.idIndex]['num_docs_indexed'] == current_doc_count:
@@ -1539,6 +1717,7 @@ class runPerformanceBenchmark(object):
         tasks = []
         opSelect = rwMixer(self.writePercent)
         runBatchSize = self.batchSize
+        record_count = self.recordCount
 
         if self.debug:
             print("Starting test instance %d" % instance)
@@ -1564,9 +1743,12 @@ class runPerformanceBenchmark(object):
             tasks.clear()
             begin_time = time.time()
             for y in range(int(runBatchSize)):
-                record_number = self.next_record.next
-                if record_number > maximum:
-                    break
+                if maximum == 0:
+                    record_number = random.getrandbits(8) % record_count
+                else:
+                    record_number = self.next_record.next
+                    if record_number > maximum:
+                        break
                 record_id = str(format(record_number, '032'))
                 if opSelect.write(record_number):
                     jsonDoc = r.processTemplate()
@@ -1676,6 +1858,7 @@ class runPerformanceBenchmark(object):
         parser.add_argument('--debug', action='store_true')
         parser.add_argument('--random', action='store_true')
         parser.add_argument('--dryrun', action='store_true')
+        parser.add_argument('--model', action='store_true')
         self.args = parser.parse_args()
         self.username = self.args.user if self.args.user else "Administrator"
         self.password = self.args.password if self.args.password else "password"
@@ -1704,6 +1887,7 @@ class runPerformanceBenchmark(object):
         self.debug = self.args.debug
         self.randomFlag = self.args.random
         self.dryRunFlag = self.args.dryrun
+        self.runCpuModelFlag = self.args.model
 
 def main():
     runPerformanceBenchmark()
