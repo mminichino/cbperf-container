@@ -29,7 +29,7 @@ RUN dnf install -y python2 \
 RUN alternatives --set python /usr/bin/python2
 RUN alternatives --set python3 /usr/bin/python3.9
 RUN pip3 install --upgrade pip setuptools wheel
-RUN pip3 install boto boto3 botocore requests dnspython netaddr docutils couchbase netifaces pyvmomi jinja2
+RUN pip3 install boto boto3 botocore requests dnspython netaddr docutils couchbase netifaces pyvmomi jinja2 psutil
 
 FROM base
 
