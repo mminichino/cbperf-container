@@ -5,6 +5,7 @@ Invoke Custom Couchbase Pillow Fight
 '''
 
 import os
+import queue
 import sys
 import argparse
 import json
@@ -416,6 +417,21 @@ class rwMixer(object):
         else:
             return False
 
+class fastRandom(object):
+
+    def __init__(self, x=256):
+        self.max_value = x
+        self.bits = self.max_value.bit_length()
+
+    @property
+    def value(self):
+        rand_number = random.getrandbits(self.bits) % self.max_value
+        if rand_number == 0:
+            rand_number = 1
+        if rand_number > self.max_value:
+            rand_number = self.max_value
+        return rand_number
+
 class runPerformanceBenchmark(object):
 
     def __init__(self):
@@ -450,6 +466,9 @@ class runPerformanceBenchmark(object):
         self.idIndex = self.bucket + '_id_ix1'
         self.keyArray = []
         self.hostList = []
+        self.queryLatency = 1
+        self.kvLatency = 1
+        self.queryBatchSize = 1
         self.clusterVersion = None
         self.next_record=mpAtomicIncrement()
         self.getHostList()
@@ -502,17 +521,8 @@ class runPerformanceBenchmark(object):
         if self.idIndex not in index_data:
             print("Database is not properly indexed.")
 
-        print("Waiting for %d documents to be indexed." % self.recordCount)
-        index_total_count = int(self.recordCount) * 2
-        index_wait = 0
-        while index_data[self.idIndex]['num_docs_indexed'] < index_total_count:
-            index_wait += 1
-            if index_wait == 120:
-                print("Timeout waiting for index to be ready.")
-                sys.exit(1)
-            index_data = self.getIndexStats(self.bucket)
-            time.sleep(0.1 * index_wait)
-        print("Done.")
+        if not self.indexWait(self.idIndex, self.recordCount * 2):
+            sys.exit(1)
 
         if ((not self.manualMode and self.queryField) or (self.queryField and self.runOnly)) and not self.kvOnly:
             print("Beginning N1QL tests.")
@@ -590,6 +600,23 @@ class runPerformanceBenchmark(object):
 
         return False
 
+    def indexWait(self, index, count=1, timeout=120):
+        index_wait = 0
+        index_data = self.getIndexStats(self.bucket)
+        if index not in index_data:
+            print("Index %s does not exist." % index)
+            return False
+        print("Waiting for %d documents to be indexed." % count)
+        while index_data[index]['num_docs_indexed'] < count:
+            index_wait += 1
+            if index_wait == timeout:
+                print("Timeout waiting for index to be ready.")
+                return False
+            index_data = self.getIndexStats(self.bucket)
+            time.sleep(0.1 * index_wait)
+        print("Done.")
+        return True
+
     def _bucketRetry(self, bucket, limit=5):
         for i in range(limit):
             try:
@@ -660,8 +687,9 @@ class runPerformanceBenchmark(object):
 
     def cb_connect_s(self):
         auth = PasswordAuthenticator(self.username, self.password)
+        timeouts = ClusterTimeoutOptions(query_timeout=timedelta(seconds=1200), kv_timeout=timedelta(seconds=1200))
         try:
-            cluster = Cluster("http://" + self.host + ":8091", authenticator=auth, lockmode=2)
+            cluster = Cluster("http://" + self.host + ":8091", authenticator=auth, lockmode=LOCKMODE_NONE, timeout_options=timeouts)
             bucket = cluster.bucket(self.bucket)
             return cluster, bucket
         except Exception as e:
@@ -742,6 +770,39 @@ class runPerformanceBenchmark(object):
                                                     pipeline_cap=1024, scan_cap=1024))
                 async for item in result:
                     contents.append(item)
+                if self.debug:
+                    debug_file = open("data.debug", "w")
+                    debug_file.write(query + "\n")
+                    debug_file.write(json.dumps(contents, indent=2) + "\n")
+                    debug_file.close()
+                return contents
+            except ParsingFailedException as e:
+                print("Query syntax error: %s", str(e))
+                sys.exit(1)
+            except Exception as e:
+                if retries == self.maxRetries:
+                    raise Exception("cb_query SDK error: %s" % str(e))
+                else:
+                    retries += 1
+                    time.sleep(0.01 * retries)
+                    continue
+
+    def cb_query_s(self, cluster, select, where, value):
+        contents = []
+        retries = 0
+        query = "SELECT " + select + " FROM pillowfight WHERE " + where + " = \"" + value + "\";"
+        while True:
+            try:
+                result = cluster.query(query,
+                                       QueryOptions(metrics=False, adhoc=True, pipeline_batch=128, max_parallelism=4,
+                                                    pipeline_cap=1024, scan_cap=1024))
+                for item in result:
+                    contents.append(item)
+                if self.debug:
+                    debug_file = open("data.debug", "w")
+                    debug_file.write(query + "\n")
+                    debug_file.write(json.dumps(contents, indent=2) + "\n")
+                    debug_file.close()
                 return contents
             except ParsingFailedException as e:
                 print("Query syntax error: %s", str(e))
@@ -1165,6 +1226,10 @@ class runPerformanceBenchmark(object):
         self.randomize_num_generated = mpAtomicCounter(0)
         self.randomize_queue_size = mpAtomicCounter(0)
         self.next_record.reset()
+        self.telemetry_queue.close()
+        self.telemetry_return.close()
+        self.telemetry_queue = multiprocessing.Queue()
+        self.telemetry_return = multiprocessing.Queue()
 
     def randomizeThread(self, thread_num, json_block, count):
         retries = 1
@@ -1447,7 +1512,7 @@ class runPerformanceBenchmark(object):
         print("Test completed in %s" % time.strftime("%H hours %M minutes %S seconds.", time.gmtime(end_time - start_time)))
         self.runReset()
 
-    def dynamicStatusThread(self):
+    def dynamicStatusThread(self, latency=1):
         entry = ""
         threadVector = [0 for i in range(257)]
         return_telemetry = [0 for n in range(10)]
@@ -1463,6 +1528,7 @@ class runPerformanceBenchmark(object):
         averageCpu = 0
         maxTime = 0
         sampleCount = 1
+        loop_timeout = 5 * latency
         decTrend = False
         mem_usage = psutil.virtual_memory()
         tps_time_marker = time.perf_counter()
@@ -1491,7 +1557,7 @@ class runPerformanceBenchmark(object):
             except Empty:
                 loop_time_check = time.perf_counter()
                 loop_time_diff = loop_time_check - loop_time_marker
-                if loop_time_diff > 5:
+                if loop_time_diff > loop_timeout:
                     exitFunction()
                     return
                 else:
@@ -1535,20 +1601,18 @@ class runPerformanceBenchmark(object):
                     text = "%d %d %d %d %d %.6f %d" % (reporting_thread, entryOps, totalOps, totalTps, averageTps, averageTime, sampleCount)
                     myDebug.writeStatDebug(text)
                 loop_time_marker = time.perf_counter()
-                if decTrend or maxTime > 1 or averageCpu > 90 or mem_usage.percent > 70:
+                if decTrend or maxTime > latency or averageCpu > 90 or mem_usage.percent > 70:
                     exitFunction()
                     return
             if int(telemetry[0]) == 256:
                 exitFunction()
                 return
 
-    def runCalibration(self, mode=1):
+    def runCalibration(self, mode=1, latency=1):
         telemetry = [0 for n in range(3)]
         n = -1
         scale = []
         return_telemetry = []
-        seconds = 0
-        time_marker = time.perf_counter()
 
         def emptyQueue():
             while True:
@@ -1565,7 +1629,7 @@ class runPerformanceBenchmark(object):
             print("Can not read input file: %s" % str(e))
             sys.exit(1)
 
-        statusThread = multiprocessing.Process(target=self.dynamicStatusThread, args=())
+        statusThread = multiprocessing.Process(target=self.dynamicStatusThread, args=(latency,))
         statusThread.daemon = True
         statusThread.start()
 
@@ -1589,10 +1653,14 @@ class runPerformanceBenchmark(object):
                 while True:
                     try:
                         self.telemetry_queue.put(telemetry_packet, block=False)
+                        entry = self.telemetry_return.get(timeout=5)
+                        return_telemetry = entry.split(":")
                         break
                     except Full:
                         emptyQueue()
                         continue
+                    except Empty:
+                        break
                 break
             time.sleep(5.0)
 
@@ -1620,32 +1688,41 @@ class runPerformanceBenchmark(object):
         else:
             print("Abnormal termination.")
 
+        self.runReset()
         print("Calibration completed in %s" % time.strftime("%H hours %M minutes %S seconds.",
                                                      time.gmtime(end_time - start_time)))
 
     def cpuModel(self):
         print("Beginning CPU model mode.")
 
+        self.writePercent = 100
         print("Initiating data load.")
-        # self.writePercent = 100
-        # self.runTest(LOAD_DATA)
+        self.runTest(LOAD_DATA)
         print("Data load complete.")
 
+        if not self.indexWait(self.idIndex, self.recordCount * 2):
+            sys.exit(1)
+
+        self.writePercent = 0
+        print("Starting query calibration.")
+        self.runCalibration(QUERY_TEST, self.queryLatency)
         print("Starting KV calibration.")
-        self.runCalibration(KV_TEST)
+        self.runCalibration(KV_TEST, self.kvLatency)
         print("Done.")
 
         print("Cleaning up.")
-        # self.dropIndex(self.fieldIndex)
-        # self.dropIndex(self.idIndex)
-        # self.deleteBucket()
+        self.dropIndex(self.fieldIndex)
+        self.dropIndex(self.idIndex)
+        self.deleteBucket()
 
     def dryRun(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         record_number = 1
         retries = 0
-        index_wait = 0
+
+        def query_thread():
+            return loop.run_until_complete(self.cb_query(cluster, self.queryField, self.idField, record_id))
 
         print("Beginning dry run mode.")
 
@@ -1696,15 +1773,8 @@ class runPerformanceBenchmark(object):
         print("Read complete.")
         print(json.dumps(result.content_as[dict], indent=2))
 
-        print("Waiting for new document to be indexed.")
-        while index_data[self.idIndex]['num_docs_indexed'] == current_doc_count:
-            index_wait += 1
-            if index_wait == 120:
-                print("Timeout waiting for index to be ready.")
-                sys.exit(1)
-            index_data = self.getIndexStats(self.bucket)
-            time.sleep(0.1 * index_wait)
-        print("Done.")
+        if not self.indexWait(self.idIndex, current_doc_count):
+            sys.exit(1)
 
         while retries <= 5:
             print("Attempting to query record %d retry %d..." % (record_number, retries))
@@ -1737,8 +1807,12 @@ class runPerformanceBenchmark(object):
         telemetry = [0 for n in range(3)]
         tasks = []
         opSelect = rwMixer(self.writePercent)
-        runBatchSize = self.batchSize
+        if mode == QUERY_TEST:
+            runBatchSize = self.queryBatchSize
+        else:
+            runBatchSize = self.batchSize
         record_count = self.recordCount
+        rand_gen = fastRandom(record_count)
 
         if self.debug:
             print("Starting test instance %d" % instance)
@@ -1765,7 +1839,7 @@ class runPerformanceBenchmark(object):
             begin_time = time.time()
             for y in range(int(runBatchSize)):
                 if maximum == 0:
-                    record_number = random.getrandbits(8) % record_count
+                    record_number = rand_gen.value
                 else:
                     record_number = self.next_record.next
                     if record_number > maximum:
@@ -1773,6 +1847,7 @@ class runPerformanceBenchmark(object):
                 record_id = str(format(record_number, '032'))
                 if opSelect.write(record_number):
                     jsonDoc = r.processTemplate()
+                    jsonDoc[self.idField] = record_id
                     tasks.append(self.cb_upsert(collection, record_id, jsonDoc))
                 else:
                     if mode == QUERY_TEST:
@@ -1792,8 +1867,6 @@ class runPerformanceBenchmark(object):
                 telemetry[2] = loop_total_time
                 telemetry_packet = ':'.join(str(i) for i in telemetry)
                 self.telemetry_queue.put(telemetry_packet)
-                if self.debug:
-                    myDebug.writeQueryDebug(telemetry, instance)
             else:
                 break
 
@@ -1887,8 +1960,8 @@ class runPerformanceBenchmark(object):
         self.host = self.args.host if self.args.host else "localhost"
         self.recordCount = self.args.count if self.args.count else 1000000
         self.operationCount = self.args.ops if self.args.ops else 100000
-        self.loadThreadCount = int(self.args.tload) if self.args.tload else 32
-        self.runThreadCount = int(self.args.trun) if self.args.trun else os.cpu_count() * 2
+        self.loadThreadCount = int(self.args.tload) if self.args.tload else os.cpu_count() * 6
+        self.runThreadCount = int(self.args.trun) if self.args.trun else os.cpu_count() * 6
         self.bucketMemory = self.args.memquota
         self.runWorkload = self.args.workload
         self.inputFile = self.args.file
