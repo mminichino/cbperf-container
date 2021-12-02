@@ -1607,7 +1607,7 @@ class runPerformanceBenchmark(object):
         sys.stdout.write("\033[K")
         print("Max threshold reached.")
         print(">> %d instances <<" % n)
-        if len(return_telemetry) >= 9:
+        if len(return_telemetry) >= 10:
             print("=> %d total ops." % int(return_telemetry[1]))
             print("=> %.6f max time." % float(return_telemetry[2]))
             print("=> %.6f average time." % float(return_telemetry[3]))
@@ -1616,7 +1616,7 @@ class runPerformanceBenchmark(object):
             print("=> %.1f average CPU." % float(return_telemetry[6]))
             print("=> %.1f used memory." % float(return_telemetry[7]))
             print("=> Lag trend %s." % return_telemetry[8])
-            print("=> Max TPS threads %d <<<" % return_telemetry[9])
+            print("=> Max TPS threads %d <<<" % int(return_telemetry[9]))
         else:
             print("Abnormal termination.")
 
