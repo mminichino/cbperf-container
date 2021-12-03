@@ -5,10 +5,10 @@ Invoke Custom Couchbase Pillow Fight
 '''
 
 import os
-import queue
 import sys
 import argparse
 import json
+from couchbase.diagnostics import PingState
 from jinja2 import Template
 import time
 import asyncio
@@ -16,6 +16,8 @@ import acouchbase.cluster
 import requests
 from datetime import datetime, timedelta
 import random
+import socket
+import configparser
 from couchbase_core._libcouchbase import LOCKMODE_EXC, LOCKMODE_NONE, LOCKMODE_WAIT
 from couchbase.cluster import Cluster, ClusterOptions, QueryOptions, ClusterTimeoutOptions
 from couchbase.auth import PasswordAuthenticator
@@ -25,7 +27,6 @@ from couchbase.management.buckets import CreateBucketSettings
 from couchbase.exceptions import BucketNotFoundException
 from couchbase.exceptions import CouchbaseException
 from couchbase.exceptions import ParsingFailedException
-import threading
 import multiprocessing
 from queue import Empty, Full
 import psutil
@@ -470,19 +471,13 @@ class runPerformanceBenchmark(object):
     def __init__(self):
         self.out_thread = None
         self.err_thread = None
-        # self.out_queue = Queue()
-        # self.err_queue = Queue()
         self.cpu_count = os.cpu_count()
         self.randomize_queue = multiprocessing.Queue()
-        # self.randomize_control = Queue()
         self.telemetry_queue = multiprocessing.Queue()
         self.telemetry_return = multiprocessing.Queue()
-        # self.telemetry_queue = {}
-        # self.telemetry_control = Queue()
         self.randomize_thread_count = round(self.cpu_count / 2)
         self.randomize_num_generated = mpAtomicCounter(0)
         self.randomize_queue_size = mpAtomicCounter(0)
-        # self.counterLock = threading.Lock()
         self.recordId = 0
         self.currentOp = 0
         self.percentage = 0
@@ -494,7 +489,7 @@ class runPerformanceBenchmark(object):
             'c': 0
         }
         self.parse_args()
-        # self.clusterConnect()
+        self.checkHostName()
         self.fieldIndex = self.bucket + '_ix1'
         self.idIndex = self.bucket + '_id_ix1'
         self.keyArray = []
@@ -503,7 +498,15 @@ class runPerformanceBenchmark(object):
         self.kvLatency = 1
         self.queryBatchSize = 1
         self.clusterVersion = None
-        self.next_record=mpAtomicIncrement()
+        self.next_record = mpAtomicIncrement()
+
+        print("Checking cluster with host %s ..." % self.host, end=' ')
+        if self.waitOn(self.checkClusterHealth):
+            print("OK.")
+        else:
+            print("Failed. Check cluster status.")
+            sys.exit(1)
+
         self.getHostList()
 
         print("CBPerf Test connected to %s cluster version %s." % (self.host, self.clusterVersion))
@@ -598,6 +601,40 @@ class runPerformanceBenchmark(object):
             print("Deleting bucket %s." % self.bucket)
             self.deleteBucket()
 
+    def checkHostName(self):
+        try:
+            socket.gethostbyname(self.host)
+        except Exception as e:
+            print("Can not resolve host %s: %s" % (self.host, str(e)))
+            sys.exit(1)
+
+    def checkClusterHealth(self):
+        try:
+            auth = PasswordAuthenticator(self.username, self.password)
+            cluster = Cluster("http://" + self.host + ":8091", authenticator=auth, lockmode=LOCKMODE_NONE)
+            result = cluster.ping()
+            for _, reports in result.endpoints.items():
+                for report in reports:
+                    if not report.state == PingState.OK:
+                        return False
+        except Exception as e:
+            print("Cluster ping failed: %s" % str(e))
+            return False
+        cluster.disconnect()
+        return True
+
+    def waitOn(self, function, retries=5):
+        count = 0
+        while True:
+            if count == retries:
+                return False
+            if function():
+                return True
+            else:
+                count += 1
+                time.sleep(0.2 * count)
+                continue
+
     def clusterConnect(self):
         try:
             auth = PasswordAuthenticator(self.username, self.password)
@@ -639,7 +676,7 @@ class runPerformanceBenchmark(object):
         if index not in index_data:
             print("Index %s does not exist." % index)
             return False
-        print("Waiting for %d documents to be indexed." % count)
+        print("Waiting for %d document(s) to be indexed." % count)
         while index_data[index]['num_docs_indexed'] < count:
             index_wait += 1
             if index_wait == timeout:
@@ -709,14 +746,21 @@ class runPerformanceBenchmark(object):
     async def dataConnect(self):
         auth = PasswordAuthenticator(self.username, self.password)
         timeouts = ClusterTimeoutOptions(query_timeout=timedelta(seconds=1200), kv_timeout=timedelta(seconds=1200))
-        try:
-            cluster = acouchbase.cluster.Cluster("http://" + self.host + ":8091", authenticator=auth, lockmode=LOCKMODE_NONE, timeout_options=timeouts)
-            bucket = cluster.bucket(self.bucket)
-            await cluster.on_connect()
-            return cluster, bucket
-        except Exception as e:
-            print("Can not connect to cluster: %s" % str(e))
-            sys.exit(1)
+        retries = 0
+        while True:
+            try:
+                cluster = acouchbase.cluster.Cluster("http://" + self.host + ":8091", authenticator=auth, lockmode=LOCKMODE_NONE, timeout_options=timeouts)
+                bucket = cluster.bucket(self.bucket)
+                await cluster.on_connect()
+                return cluster, bucket
+            except Exception as e:
+                if retries == 10:
+                    print("dataConnect: Can not connect to cluster: %s" % str(e))
+                    sys.exit(1)
+                else:
+                    retries += 1
+                    time.sleep(0.1 * retries)
+                    continue
 
     def cb_connect_s(self):
         auth = PasswordAuthenticator(self.username, self.password)
@@ -1753,6 +1797,14 @@ class runPerformanceBenchmark(object):
         self.writePercent = 0
         print("Starting query calibration.")
         self.runCalibration(QUERY_TEST, self.queryLatency)
+        print("Pausing...")
+        time.sleep(10)
+        print("Checking cluster ...", end=' ')
+        if self.waitOn(self.checkClusterHealth):
+            print("OK.")
+        else:
+            print("Not OK. Check cluster status. Aborting.")
+            sys.exit(1)
         print("Starting KV calibration.")
         self.runCalibration(KV_TEST, self.kvLatency)
         print("Done.")
@@ -1830,7 +1882,7 @@ class runPerformanceBenchmark(object):
             if len(result) == 0:
                 retries += 1
                 print("No rows returned, retrying...")
-                time.sleep(0.1 * retries)
+                time.sleep(0.2 * retries)
                 continue
             else:
                 break
