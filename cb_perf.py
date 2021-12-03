@@ -1546,7 +1546,7 @@ class runPerformanceBenchmark(object):
 
     def dynamicStatusThread(self, latency=1):
         entry = ""
-        threadVector = [0 for i in range(1026)]
+        threadVector = [0 for i in range(513)]
         return_telemetry = [0 for n in range(10)]
         threadVectorSize = 1
         totalTps = 0
@@ -1682,7 +1682,7 @@ class runPerformanceBenchmark(object):
                     break
             except Empty:
                 pass
-            if n == 1025:
+            if n == 512:
                 telemetry[0] = RUN_STOP
                 telemetry_packet = ':'.join(str(i) for i in telemetry)
                 while True:
