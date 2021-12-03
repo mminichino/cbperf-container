@@ -31,9 +31,10 @@ from queue import Empty, Full
 import psutil
 threadLock = multiprocessing.Lock()
 
-LOAD_DATA = 0
-KV_TEST = 1
-QUERY_TEST = 2
+LOAD_DATA = 0x0000
+KV_TEST = 0x0001
+QUERY_TEST = 0x0002
+RUN_STOP = 0xFFFF
 
 class randomize(object):
 
@@ -1212,7 +1213,7 @@ class runPerformanceBenchmark(object):
             telemetry = entry.split(":")
             if self.debug:
                 myDebug.writeTelemetryDebug(entry)
-            if int(telemetry[0]) < 256:
+            if int(telemetry[0]) < RUN_STOP:
                 entryOps = int(telemetry[1])
                 time_delta = float(telemetry[2])
                 reporting_thread = int(telemetry[0])
@@ -1241,7 +1242,7 @@ class runPerformanceBenchmark(object):
                 if self.debug:
                     text = "%d %d %d %d %d %.6f %d" % (reporting_thread, entryOps, totalOps, totalTps, averageTps, averageTime, sampleCount)
                     myDebug.writeStatDebug(text)
-            if int(telemetry[0]) == 256:
+            if int(telemetry[0]) == RUN_STOP:
                 sys.stdout.write("\033[K")
                 print("Operation %d of %d, %d%% complete." % (totalOps, count, self.percentage))
                 print("Test Done.")
@@ -1366,7 +1367,7 @@ class runPerformanceBenchmark(object):
             threadSet[y].join()
 
         end_time = time.perf_counter()
-        telemetry[0] = 256
+        telemetry[0] = RUN_STOP
         telemetry_packet = ':'.join(str(i) for i in telemetry)
         self.telemetry_queue.put(telemetry_packet)
         statusThread.join()
@@ -1452,7 +1453,7 @@ class runPerformanceBenchmark(object):
             threadSet[y].join()
 
         end_time = time.perf_counter()
-        telemetry[0] = 256
+        telemetry[0] = RUN_STOP
         telemetry_packet = ':'.join(str(i) for i in telemetry)
         self.telemetry_queue.put(telemetry_packet)
         statusThread.join()
@@ -1526,7 +1527,7 @@ class runPerformanceBenchmark(object):
             threadSet[y].join()
 
         end_time = time.perf_counter()
-        telemetry[0] = 256
+        telemetry[0] = RUN_STOP
         telemetry_packet = ':'.join(str(i) for i in telemetry)
         self.telemetry_queue.put(telemetry_packet)
         statusThread.join()
@@ -1545,7 +1546,7 @@ class runPerformanceBenchmark(object):
 
     def dynamicStatusThread(self, latency=1):
         entry = ""
-        threadVector = [0 for i in range(257)]
+        threadVector = [0 for i in range(1024)]
         return_telemetry = [0 for n in range(10)]
         threadVectorSize = 1
         totalTps = 0
@@ -1566,7 +1567,7 @@ class runPerformanceBenchmark(object):
         loop_time_marker = tps_time_marker
 
         def exitFunction():
-            return_telemetry[0] = 256
+            return_telemetry[0] = RUN_STOP
             return_telemetry[1] = totalOps
             return_telemetry[2] = maxTime
             return_telemetry[3] = averageTime
@@ -1596,7 +1597,7 @@ class runPerformanceBenchmark(object):
             telemetry = entry.split(":")
             if self.debug:
                 myDebug.writeTelemetryDebug(entry)
-            if int(telemetry[0]) < 256:
+            if int(telemetry[0]) < RUN_STOP:
                 entryOps = int(telemetry[1])
                 time_delta = float(telemetry[2])
                 reporting_thread = int(telemetry[0])
@@ -1635,15 +1636,16 @@ class runPerformanceBenchmark(object):
                 if decTrend or maxTime > latency or averageCpu > 90 or mem_usage.percent > 70:
                     exitFunction()
                     return
-            if int(telemetry[0]) == 256:
+            if int(telemetry[0]) == RUN_STOP:
                 exitFunction()
                 return
 
     def runCalibration(self, mode=1, latency=1):
         telemetry = [0 for n in range(3)]
-        n = -1
+        n = 0
         scale = []
         return_telemetry = []
+        accelerator = 1
 
         def emptyQueue():
             while True:
@@ -1665,21 +1667,23 @@ class runPerformanceBenchmark(object):
         statusThread.start()
 
         print("Beginning calibration...")
-        start_time = time.perf_counter()
+        time_snap = time.perf_counter()
+        start_time = time_snap
         while True:
-            n += 1
-            scale.append(multiprocessing.Process(target=self.testInstance, args=(inputFileJson, mode, 0, n)))
-            scale[n].daemon = True
-            scale[n].start()
+            for i in range(accelerator):
+                scale.append(multiprocessing.Process(target=self.testInstance, args=(inputFileJson, mode, 0, n)))
+                scale[n].daemon = True
+                scale[n].start()
+                n += 1
             try:
                 entry = self.telemetry_return.get(block=False)
                 return_telemetry = entry.split(":")
-                if int(return_telemetry[0]) == 256:
+                if int(return_telemetry[0]) == RUN_STOP:
                     break
             except Empty:
                 pass
-            if n == 255:
-                telemetry[0] = 256
+            if n == 1025:
+                telemetry[0] = RUN_STOP
                 telemetry_packet = ':'.join(str(i) for i in telemetry)
                 while True:
                     try:
@@ -1693,6 +1697,11 @@ class runPerformanceBenchmark(object):
                     except Empty:
                         break
                 break
+            time_check = time.perf_counter()
+            time_diff = time_check - time_snap
+            if time_diff >= 60:
+                time_snap = time.perf_counter()
+                accelerator *= 2
             time.sleep(5.0)
 
         for p in scale:
@@ -1946,7 +1955,7 @@ class runPerformanceBenchmark(object):
             p.join()
 
         end_time = time.perf_counter()
-        telemetry[0] = 256
+        telemetry[0] = RUN_STOP
         telemetry_packet = ':'.join(str(i) for i in telemetry)
         self.telemetry_queue.put(telemetry_packet)
         statusThread.join()
