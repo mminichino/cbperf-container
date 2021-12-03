@@ -1804,7 +1804,7 @@ class runPerformanceBenchmark(object):
         print("Read complete.")
         print(json.dumps(result.content_as[dict], indent=2))
 
-        if not self.indexWait(self.idIndex, current_doc_count):
+        if not self.indexWait(self.idIndex, current_doc_count + 1):
             sys.exit(1)
 
         while retries <= 5:
