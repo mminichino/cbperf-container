@@ -499,6 +499,7 @@ class runPerformanceBenchmark(object):
         self.queryBatchSize = 1
         self.clusterVersion = None
         self.next_record = mpAtomicIncrement()
+        self.errorCount = mpAtomicCounter()
 
         print("Checking cluster with host %s ..." % self.host, end=' ')
         if self.waitOn(self.checkClusterHealth):
@@ -745,7 +746,7 @@ class runPerformanceBenchmark(object):
 
     async def dataConnect(self):
         auth = PasswordAuthenticator(self.username, self.password)
-        timeouts = ClusterTimeoutOptions(query_timeout=timedelta(seconds=1200), kv_timeout=timedelta(seconds=1200))
+        timeouts = ClusterTimeoutOptions(query_timeout=timedelta(seconds=4800), kv_timeout=timedelta(seconds=4800))
         retries = 0
         while True:
             try:
@@ -1899,6 +1900,12 @@ class runPerformanceBenchmark(object):
         self.dropIndex(self.fieldIndex)
         self.dropIndex(self.idIndex)
         self.deleteBucket()
+
+    def testCallBack(self, future):
+        try:
+            future.result()
+        except Exception:
+            self.errorCount.increment(1)
 
     def testInstance(self, json_block, mode=0, maximum=1, instance=1):
         loop = asyncio.new_event_loop()
