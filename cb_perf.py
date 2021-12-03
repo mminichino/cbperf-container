@@ -34,6 +34,7 @@ threadLock = multiprocessing.Lock()
 LOAD_DATA = 0x0000
 KV_TEST = 0x0001
 QUERY_TEST = 0x0002
+INSTANCE_MAX = 0x200
 RUN_STOP = 0xFFFF
 
 class randomize(object):
@@ -1546,7 +1547,7 @@ class runPerformanceBenchmark(object):
 
     def dynamicStatusThread(self, latency=1):
         entry = ""
-        threadVector = [0 for i in range(513)]
+        threadVector = [0]
         return_telemetry = [0 for n in range(10)]
         threadVectorSize = 1
         totalTps = 0
@@ -1580,6 +1581,11 @@ class runPerformanceBenchmark(object):
             return_telemetry_packet = ':'.join(str(i) for i in return_telemetry)
             self.telemetry_return.put(return_telemetry_packet)
 
+        def threadVectorExtend(n):
+            if len(threadVector) <= n:
+                grow = (n - len(threadVector)) + 1
+                threadVector.extend([0]*grow)
+
         if self.debug:
             myDebug = debugOutput()
 
@@ -1601,6 +1607,7 @@ class runPerformanceBenchmark(object):
                 entryOps = int(telemetry[1])
                 time_delta = float(telemetry[2])
                 reporting_thread = int(telemetry[0])
+                threadVectorExtend(reporting_thread)
                 if reporting_thread >= threadVectorSize:
                     threadVectorSize = reporting_thread + 1
                 threadVector[reporting_thread] = round(entryOps / time_delta)
@@ -1682,7 +1689,7 @@ class runPerformanceBenchmark(object):
                     break
             except Empty:
                 pass
-            if n == 512:
+            if n >= INSTANCE_MAX:
                 telemetry[0] = RUN_STOP
                 telemetry_packet = ':'.join(str(i) for i in telemetry)
                 while True:
