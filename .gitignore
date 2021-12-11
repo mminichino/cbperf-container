@@ -7,6 +7,7 @@ workloads/*.dat
 workload*.dat
 data-load.dat
 *.debug
+test.py
 
 # ignore standard Eclipse files
 .project
