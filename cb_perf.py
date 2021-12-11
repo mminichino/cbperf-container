@@ -1401,6 +1401,17 @@ class runPerformanceBenchmark(object):
                 time.sleep(0.2 * count)
                 continue
 
+    def modeString(self, mode):
+        if mode == KV_TEST:
+            mode_string = 'Key-Value Test'
+        elif mode == QUERY_TEST:
+            mode_string = 'Query Test'
+        elif mode == LOAD_DATA:
+            mode_string = 'Data Load'
+        else:
+            mode_string = 'Other Test'
+        return mode_string
+
     def printStatusThread(self, count, threads):
         threadVector = [0 for i in range(threads)]
         totalTps = 0
@@ -1571,6 +1582,8 @@ class runPerformanceBenchmark(object):
         return_telemetry = []
         accelerator = 1
 
+        print("Calibration module. Mode: %s" % self.modeString(mode))
+
         def emptyQueue():
             while True:
                 try:
@@ -1686,41 +1699,6 @@ class runPerformanceBenchmark(object):
             except Exception as e:
                 print("Error: %s" % str(e))
                 sys.exit(1)
-
-    def cpuModel(self):
-        loop = asyncio.get_event_loop()
-        print("Beginning CPU model mode.")
-
-        try:
-            self.logger.info("Connecting to cluster with host %s" % self.host)
-            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls)
-        except Exception as e:
-            self.logger.critical("%s" % str(e))
-            sys.exit(1)
-
-        self.writePercent = 100
-        print("Initiating data load.")
-        self.runTest(LOAD_DATA, cleanup=False)
-        print("Data load complete.")
-
-        print("Waiting for documents to be indexed.")
-        if not cb_cluster.index_wait(self.bucket, self.idIndex, self.recordCount * 2):
-            sys.exit(1)
-
-        self.writePercent = 0
-        print("Starting query calibration.")
-        self.runCalibration(QUERY_TEST, self.queryLatency, cleanup=False)
-        print("Pausing...")
-        time.sleep(10)
-        print("Checking cluster ...", end=' ')
-        if self.waitOn(cb_cluster.health):
-            print("OK.")
-        else:
-            print("Not OK. Check cluster status. Aborting.")
-            sys.exit(1)
-        print("Starting KV calibration.")
-        self.runCalibration(KV_TEST, self.kvLatency)
-        print("Done.")
 
     def dryRun(self):
         loop = asyncio.get_event_loop()
@@ -1913,6 +1891,8 @@ class runPerformanceBenchmark(object):
         loop = asyncio.get_event_loop()
         telemetry = [0 for n in range(3)]
 
+        print("Test module. Mode: %s" % self.modeString(mode))
+
         if mode == LOAD_DATA:
             operation_count = int(self.recordCount)
             run_threads = int(self.loadThreadCount)
@@ -1989,72 +1969,6 @@ class runPerformanceBenchmark(object):
             except Exception as e:
                 print("Error: %s" % str(e))
                 sys.exit(1)
-
-    # def parse_args(self):
-    #     parser = argparse.ArgumentParser()
-    #     parser.add_argument('--user', action='store')
-    #     parser.add_argument('--password', action='store')
-    #     parser.add_argument('--bucket', action='store')
-    #     parser.add_argument('--host', action='store')
-    #     parser.add_argument('--count', action='store')
-    #     parser.add_argument('--ops', action='store')
-    #     parser.add_argument('--tload', action='store')
-    #     parser.add_argument('--trun', action='store')
-    #     parser.add_argument('--memquota', action='store')
-    #     parser.add_argument('--workload', action='store')
-    #     parser.add_argument('--file', action='store')
-    #     parser.add_argument('--batch', action='store')
-    #     parser.add_argument('--kv', action='store_true')
-    #     parser.add_argument('--id', action='store')
-    #     parser.add_argument('--query', action='store')
-    #     parser.add_argument('--value', action='store')
-    #     parser.add_argument('--retries', action='store')
-    #     parser.add_argument('--makeindex', action='store_true')
-    #     parser.add_argument('--dropindex', action='store_true')
-    #     parser.add_argument('--manual', action='store_true')
-    #     parser.add_argument('--load', action='store_true')
-    #     parser.add_argument('--run', action='store_true')
-    #     parser.add_argument('--makebucket', action='store_true')
-    #     parser.add_argument('--dropbucket', action='store_true')
-    #     parser.add_argument('--debug', action='store')
-    #     parser.add_argument('--random', action='store_true')
-    #     parser.add_argument('--dryrun', action='store_true')
-    #     parser.add_argument('--model', action='store_true')
-    #     parser.add_argument('--tls', action='store_true')
-    #     parser.add_argument('--list', action='store_true')
-    #     parser.add_argument('--overwrite', action='store_true')
-    #     self.args = parser.parse_args()
-    #     self.username = self.args.user if self.args.user else "Administrator"
-    #     self.password = self.args.password if self.args.password else "password"
-    #     self.bucket = self.args.bucket if self.args.bucket else "pillowfight"
-    #     self.host = self.args.host if self.args.host else "localhost"
-    #     self.recordCount = self.args.count if self.args.count else 1000000
-    #     self.operationCount = self.args.ops if self.args.ops else 100000
-    #     self.loadThreadCount = int(self.args.tload) if self.args.tload else os.cpu_count() * 6
-    #     self.runThreadCount = int(self.args.trun) if self.args.trun else os.cpu_count() * 6
-    #     self.bucketMemory = self.args.memquota
-    #     self.runWorkload = self.args.workload
-    #     self.inputFile = self.args.file
-    #     self.batchSize = self.args.batch if self.args.batch else 100
-    #     self.kvOnly = self.args.kv
-    #     self.idField = self.args.id if self.args.id else "record_id"
-    #     self.queryField = self.args.query
-    #     self.queryValue = self.args.value
-    #     self.maxRetries = int(self.args.retries) if self.args.retries else 60
-    #     self.createIndexFlag = self.args.makeindex
-    #     self.dropIndexFlag = self.args.dropindex
-    #     self.manualMode = self.args.manual
-    #     self.loadOnly = self.args.load
-    #     self.runOnly = self.args.run
-    #     self.makeBucketOnly = self.args.makebucket
-    #     self.dropBucketOnly = self.args.dropbucket
-    #     self.debug_level = int(self.args.debug) if self.args.debug else 3
-    #     self.randomFlag = self.args.random
-    #     self.dryRunFlag = self.args.dryrun
-    #     self.runCpuModelFlag = self.args.model
-    #     self.tls = self.args.tls
-    #     self.list = self.args.list
-    #     self.configOverwrite = self.args.overwrite
 
 def main():
     runPerformanceBenchmark()
