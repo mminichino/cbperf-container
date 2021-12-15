@@ -26,17 +26,20 @@ from couchbase.auth import PasswordAuthenticator
 from couchbase.cluster import QueryOptions
 from couchbase.cluster import QueryIndexManager
 from couchbase.management.buckets import CreateBucketSettings, BucketType
-from couchbase.exceptions import BucketNotFoundException
+from couchbase.exceptions import DocumentNotFoundException
 from couchbase.exceptions import CouchbaseException
 from couchbase.exceptions import ParsingFailedException
 import multiprocessing
 from queue import Empty, Full
 import psutil
+import dns.resolver
+import ipaddress
 threadLock = multiprocessing.Lock()
 
 LOAD_DATA = 0x0000
 KV_TEST = 0x0001
 QUERY_TEST = 0x0002
+REMOVE_DATA = 0x0003
 PAUSE_TEST = 0x0009
 INSTANCE_MAX = 0x200
 RUN_STOP = 0xFFFF
@@ -470,11 +473,20 @@ class fastRandom(object):
             rand_number = self.max_value
         return rand_number
 
+class NotAuthorized(Exception):
+    def __init__(self, message):
+        super().__init__(message)
+
+class RequestNotFound(Exception):
+    def __init__(self, message):
+        super().__init__(message)
+
 class cbutil(object):
 
     def __init__(self, hostname='localhost', username='Administrator', password='password', ssl=False, aio=False):
         import logging
         self.debug = False
+        self.tls = False
         self.logger = None
         self.aio = aio
         self.hostname = hostname
@@ -482,6 +494,10 @@ class cbutil(object):
         self.password = password
         self.bucket_memory = None
         self.host_list = []
+        self.ext_host_list = []
+        self.srv_host_list = []
+        self.rally_point_hostname = hostname
+        self.connect_name = hostname
         self.mem_quota = None
         self.retries = 5
         self.auth = PasswordAuthenticator(self.username, self.password)
@@ -496,29 +512,28 @@ class cbutil(object):
         self.bm = None
         self.qim = None
         if ssl:
+            self.tls = True
             self.url = "https://"
             self.aport = ":18091"
             self.nport = ":19102"
             self.cbcon = "couchbases://"
-            self.opts = "?ssl=no_verify&config_total_timeout=15&config_node_timeout=10"
+            self.opts = "?ssl=no_verify&config_total_timeout=15&config_node_timeout=10&network=external"
         else:
             self.url = "http://"
             self.aport = ":8091"
             self.nport = ":9102"
             self.cbcon = "couchbase://"
-            self.opts = "?config_total_timeout=15&config_node_timeout=10"
+            self.opts = "?config_total_timeout=15&config_node_timeout=10&network=external"
 
         if not self.is_reachable():
-            self.logger.error("cbutil: host %s unreachable" % hostname)
-            raise Exception("Can not connect to host %s." % hostname)
+            self.logger.error("cbutil: %s is unreachable" % hostname)
+            raise Exception("Can not connect to %s." % hostname)
 
         try:
-            self.mem_quota = self.get_memquota()
-            self.host_list = self.get_hostlist()
-            self.sw_version = self.get_version()
+            self.get_hostlist()
         except Exception as e:
             self.logger.error("cbutil: %s" % str(e))
-            raise Exception("%s" % str(e))
+            raise
 
     def set_debug(self, level=2):
         if level == 0:
@@ -530,13 +545,26 @@ class cbutil(object):
         else:
             self.logger.setLevel(logging.CRITICAL)
 
+    def check_status_code(self, code):
+        if code == 200:
+            return True
+        elif code == 401:
+            self.logger.error("check_status_code: code %d" % code)
+            raise NotAuthorized("Invalid credentials")
+        elif code == 404:
+            self.logger.error("check_status_code: code %d" % code)
+            raise RequestNotFound("Object Not Found")
+        else:
+            self.logger.error("check_status_code: code %d" % code)
+            raise Exception("Response Code %d" % code)
+
     @property
     def cb_string(self):
-        return self.cbcon + self.node_list() + self.opts
+        return self.cbcon + self.rally_point_hostname + self.opts
 
     @property
     def admin_url(self):
-        return self.url + self.hostname + self.aport
+        return self.url + self.connect_name + self.aport
 
     def node_url(self, nodename):
         return self.url + nodename + self.nport
@@ -601,7 +629,7 @@ class cbutil(object):
         while True:
             try:
                 response = requests.get(self.admin_url + '/pools/default/buckets/' + bucket,
-                                        auth=(self.username, self.password), verify=False, timeout=10)
+                                        auth=(self.username, self.password), verify=False, timeout=30)
                 response_json = json.loads(response.text)
                 break
             except Exception as e:
@@ -657,7 +685,7 @@ class cbutil(object):
         index_data = {}
         for hostname in self.cluster_hosts():
             response = requests.get(self.node_url(hostname) + '/api/v1/stats/' + bucket,
-                                    auth=(self.username, self.password), verify=False)
+                                    auth=(self.username, self.password), verify=False, timeout=30)
             response_json = json.loads(response.text)
             for key in response_json:
                 keyspace, index_name = key.split(':')
@@ -716,52 +744,120 @@ class cbutil(object):
         return True
 
     def is_reachable(self):
+        resolver = dns.resolver.Resolver()
+        if self.tls:
+            prefix = '_couchbases._tcp.'
+        else:
+            prefix = '_couchbase._tcp.'
         try:
-            socket.gethostbyname(self.hostname)
-            return True
-        except Exception as e:
-            self.logger.error("Can not resolve host %s: %s" % (self.hostname, str(e)))
-            return False
+            answer = resolver.resolve(prefix + self.hostname, "SRV")
+            for srv in answer:
+                record = {}
+                record['hostname'] = str(srv.target).rstrip('.')
+                host_answer = resolver.resolve(record['hostname'], 'A')
+                record['address'] = host_answer[0].address
+                self.srv_host_list.append(record)
+            self.connect_name = self.srv_host_list[0]['hostname']
+            self.rally_point_hostname = self.hostname
+        except Exception:
+            try:
+                result = socket.gethostbyname(self.hostname)
+            except Exception as e:
+                self.logger.error("Can not resolve host %s: %s" % (self.hostname, str(e)))
+                return False
+            else:
+                self.rally_point_hostname = self.hostname
+                self.connect_name = self.hostname
+        self.logger.info("is_reachable: rally_point_hostname: %s" % self.rally_point_hostname)
+        self.logger.info("is_reachable: connect_name: %s" % self.connect_name)
+        return True
 
     def get_memquota(self):
-        response = requests.get(self.admin_url + '/pools/default',
-                                auth=(self.username, self.password), verify=False)
-        response_json = json.loads(response.text)
-        if 'memoryQuota' in response_json:
-            return response_json['memoryQuota']
-        else:
-            self.logger.error("get_memquota: can not get memoryQuota.")
-            raise Exception("Can not get memory quota.")
+        return self.mem_quota
 
     def get_hostlist(self):
         host_list = []
         response = requests.get(self.admin_url + '/pools/default',
-                                auth=(self.username, self.password), verify=False)
+                                auth=(self.username, self.password), verify=False, timeout=30)
+        try:
+            self.check_status_code(response.status_code)
+        except Exception as e:
+            self.logger.error("get_hostlist: %s" % str(e))
+            raise
+
         response_json = json.loads(response.text)
+
+        if 'memoryQuota' in response_json:
+            self.mem_quota = response_json['memoryQuota']
+        else:
+            self.logger.error("get_hostlist: can not read memoryQuota.")
+            raise Exception("Invalid response from host: can not get memory quota.")
+
         if 'nodes' not in response_json:
             self.logger.error("get_hostlist: error: invalid response from %s." % self.hostname)
             raise Exception("Can not get node list from %s." % self.hostname)
         for i in range(len(response_json['nodes'])):
+            record = {}
+            if 'alternateAddresses' in response_json['nodes'][i]:
+                ext_host_name = response_json['nodes'][i]['alternateAddresses']['external']['hostname']
+                record['external_name'] = ext_host_name
+                self.logger.info("Added external node %s" % ext_host_name)
             host_name = response_json['nodes'][i]['configuredHostname']
             host_name = host_name.split(':')[0]
+            record['host_name'] = host_name
+            record['version'] = response_json['nodes'][i]['version']
+            record['ostype'] = response_json['nodes'][i]['os']
+            record['services'] = ','.join(response_json['nodes'][i]['services'])
+            self.host_list.append(record)
             self.logger.info("Added node %s" % host_name)
-            host_list.append(host_name)
-        return host_list
+
+        self.sw_version = self.host_list[0]['version']
+        return True
+
+    def print_host_map(self):
+        ext_host_name = None
+        i = 1
+        if len(self.srv_host_list) > 0:
+            print("Name %s is a domain with SRV records:" % self.rally_point_hostname)
+            for record in self.srv_host_list:
+                print(" => %s (%s)" % (record['hostname'], record['address']))
+        print("Cluster Host List:")
+        for record in self.host_list:
+            if 'external_name' in record:
+                ext_host_name = record['external_name']
+            host_name = record['host_name']
+            version = record['version']
+            ostype = record['ostype']
+            services = record['services']
+            print(" [%02d] %s" % (i, host_name), end=' ')
+            if ext_host_name:
+                print("(external) %s" % ext_host_name, end=' ')
+            print("[Services] %s [version] %s [platform] %s" % (services, version, ostype))
+            i += 1
+        for hostname in self.cluster_hosts():
+            self.logger.info("cluster_hosts: %s" % hostname)
+        self.logger.info("node_list: " + self.node_list())
 
     def get_version(self):
-        response = requests.get(self.admin_url + '/pools/default',
-                                auth=(self.username, self.password), verify=False)
-        response_json = json.loads(response.text)
-        if 'version' not in response_json['nodes'][0]:
-            self.logger.error("get_version: invalid response from host.")
-            raise Exception("Can not get version from %s." % self.hostname)
-        return response_json['nodes'][0]['version']
+        return self.host_list[0]['version']
 
     def cluster_hosts(self):
-        return iter(self.host_list)
+        list = []
+        for record in self.host_list:
+            if 'external_name' in record:
+                list.append(record['external_name'])
+            else:
+                list.append(record['host_name'])
+        return iter(list)
 
     def node_list(self):
-        return ','.join(self.host_list)
+        list = []
+        for record in self.host_list:
+            if 'external_name' in record:
+                list.append(record['external_name'])
+            else:
+                list.append(record['host_name'])
+        return ','.join(list)
 
     def connect_s(self):
         self.logger.info("connect_s: connecting to: %s" % self.cb_string)
@@ -965,6 +1061,43 @@ class cbutil(object):
             self.logger.info("Index \"%s\" drop execution time: %f secs" % (index, run_time))
         cluster.disconnect()
 
+    async def cb_remove_a(self, collection, key):
+        self.logger.info("cb_upsert_a %s" % key)
+        retries = 0
+        while True:
+            try:
+                self.logger.debug("cb_upsert_a entering loop")
+                result = await collection.remove(key)
+                return result
+            except DocumentNotFoundException:
+                return None
+            except Exception as e:
+                if retries == self.retries:
+                    self.logger.error("cb_remove_a: error: %s." % str(e))
+                    raise Exception("cb_remove_a SDK error: %s" % str(e))
+                else:
+                    self.logger.debug("cb_upsert_a retry due to %s" % str(e))
+                    retries += 1
+                    time.sleep(0.01 * retries)
+                    continue
+
+    def cb_remove_s(self, collection, key):
+        retries = 0
+        while True:
+            try:
+                result = collection.remove(key)
+                return result
+            except DocumentNotFoundException:
+                return None
+            except Exception as e:
+                if retries == self.retries:
+                    self.logger.error("cb_remove_s: error: %s." % str(e))
+                    raise Exception("cb_remove_s SDK error: %s" % str(e))
+                else:
+                    retries += 1
+                    time.sleep(0.01 * retries)
+                    continue
+
 class params(object):
 
     def __init__(self):
@@ -991,6 +1124,9 @@ class params(object):
         run_parser.add_argument('--load', action='store_true', help="Only Load Data")
         run_parser.add_argument('--dryrun', action='store_true', help="Run Single Record Test Pass")
         run_parser.add_argument('--model', action='store_true', help="Run Calibration Style Test")
+        run_parser.add_argument('--sync', action='store_true', help="Use Synchronous Connections")
+        run_parser.add_argument('--clean', action='store_true', help="Run All Document Removal Test")
+        run_parser.add_argument('--skipbucket', action='store_true', help="Use Preexisting bucket")
         self.parser = parser
         self.run_parser = run_parser
         self.list_parser = list_parser
@@ -1023,6 +1159,9 @@ class runPerformanceBenchmark(object):
         self.dryRunFlag = False
         self.loadOnly = False
         self.runCpuModelFlag = False
+        self.useSync = False
+        self.skipBucket = False
+        self.runRemoveTest = False
         self.next_record = mpAtomicIncrement()
         self.errorCount = mpAtomicCounter()
         self.cbperfConfig = self.locateCfgFile()
@@ -1085,6 +1224,12 @@ class runPerformanceBenchmark(object):
             self.dryRunFlag = parameters.dryrun
         if parameters.model:
             self.runCpuModelFlag = parameters.model
+        if parameters.sync:
+            self.useSync = parameters.sync
+        if parameters.skipbucket:
+            self.skipBucket = parameters.skipbucket
+        if parameters.clean:
+            self.runRemoveTest = parameters.clean
 
         if self.operationCount > self.recordCount:
             print("Error: Operation count must be equal or less than record count.")
@@ -1099,6 +1244,9 @@ class runPerformanceBenchmark(object):
                 sys.exit(0)
             elif self.runCpuModelFlag:
                 self.runTestScenario(self.calibrateSequence)
+                sys.exit(0)
+            elif self.runRemoveTest:
+                self.runTestScenario(self.removeSequence)
                 sys.exit(0)
             else:
                 print("Records   : %s" % f'{self.recordCount:,}')
@@ -1179,6 +1327,14 @@ class runPerformanceBenchmark(object):
                 config_section[key].update(value)
             self.loadSequence = config_section
 
+        if config.has_section('remove_plan'):
+            config_section = {}
+            for (key, value) in config.items('remove_plan'):
+                value = eval(value)
+                config_section[key] = {}
+                config_section[key].update(value)
+            self.removeSequence = config_section
+
     def writeDefaultConfigFile(self):
         config = configparser.ConfigParser()
         config_directory = os.path.dirname(self.cbperfConfig)
@@ -1189,7 +1345,7 @@ class runPerformanceBenchmark(object):
                 'run': True,
                 'cleanup': False,
                 'calibrate': False,
-                'pause': False,
+                'pause': True,
                 'test': LOAD_DATA
             },
             'test1': {
@@ -1198,7 +1354,7 @@ class runPerformanceBenchmark(object):
                 'run': True,
                 'cleanup': False,
                 'calibrate': False,
-                'pause': False,
+                'pause': True,
                 'test': KV_TEST
             },
             'test2': {
@@ -1207,7 +1363,7 @@ class runPerformanceBenchmark(object):
                 'run': True,
                 'cleanup': False,
                 'calibrate': False,
-                'pause': False,
+                'pause': True,
                 'test': KV_TEST
             },
             'test3': {
@@ -1216,7 +1372,7 @@ class runPerformanceBenchmark(object):
                 'run': True,
                 'cleanup': False,
                 'calibrate': False,
-                'pause': False,
+                'pause': True,
                 'test': KV_TEST
             },
             'test4': {
@@ -1225,7 +1381,7 @@ class runPerformanceBenchmark(object):
                 'run': True,
                 'cleanup': False,
                 'calibrate': False,
-                'pause': False,
+                'pause': True,
                 'test': QUERY_TEST
             },
             'test5': {
@@ -1234,7 +1390,7 @@ class runPerformanceBenchmark(object):
                 'run': True,
                 'cleanup': False,
                 'calibrate': False,
-                'pause': False,
+                'pause': True,
                 'test': QUERY_TEST
             },
             'test6': {
@@ -1287,6 +1443,17 @@ class runPerformanceBenchmark(object):
                 'test': LOAD_DATA
             }
         }
+        removeSequence = {
+            'remove': {
+                'write': 0,
+                'init': False,
+                'run': True,
+                'cleanup': True,
+                'calibrate': False,
+                'pause': False,
+                'test': REMOVE_DATA
+            }
+        }
 
         try:
             if not os.path.exists(config_directory):
@@ -1307,6 +1474,7 @@ class runPerformanceBenchmark(object):
         config['test_plan'] = testSequence
         config['calibrate_plan'] = calibrateSequence
         config['load_plan'] = loadSequence
+        config['remove_plan'] = removeSequence
 
         try:
             with open(self.cbperfConfig, 'w') as configfile:
@@ -1376,18 +1544,20 @@ class runPerformanceBenchmark(object):
         cb_cluster.drop_index(self.bucket, self.fieldIndex)
         print("Dropping index %s." % self.idIndex)
         cb_cluster.drop_index(self.bucket, self.idIndex)
-        print("Dropping bucket %s." % self.bucket)
-        cb_cluster.drop_bucket(self.bucket)
+        if not self.skipBucket:
+            print("Dropping bucket %s." % self.bucket)
+            cb_cluster.drop_bucket(self.bucket)
+        else:
+            print("Leaving bucket in place.")
 
     def getHostList(self):
         try:
             self.logger.info("Connecting to cluster with host %s" % self.host)
             cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls)
+            cb_cluster.print_host_map()
         except Exception as e:
             self.logger.critical("%s" % str(e))
             sys.exit(1)
-        for hostname in cb_cluster.cluster_hosts():
-            print("==> %s" % hostname)
 
     def waitOn(self, function, retries=5):
         count = 0
@@ -1408,6 +1578,8 @@ class runPerformanceBenchmark(object):
             mode_string = 'Query Test'
         elif mode == LOAD_DATA:
             mode_string = 'Data Load'
+        elif mode == REMOVE_DATA:
+            mode_string = 'Remove Data'
         else:
             mode_string = 'Other Test'
         return mode_string
@@ -1477,6 +1649,12 @@ class runPerformanceBenchmark(object):
         self.telemetry_return.close()
         self.telemetry_queue = multiprocessing.Queue()
         self.telemetry_return = multiprocessing.Queue()
+
+    def getMode(self):
+        if self.useSync:
+            return 'sync'
+        else:
+            return 'async'
 
     def dynamicStatusThread(self, latency=1):
         entry = ""
@@ -1596,9 +1774,13 @@ class runPerformanceBenchmark(object):
             cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls)
 
             if init:
-                print("CBPerf calibrate connected to %s cluster version %s." % (self.host, cb_cluster.version))
-                print("Creating bucket %s." % self.bucket)
-                cb_cluster.create_bucket(self.bucket)
+                print("CBPerf calibrate (%s) connected to cluster %s version %s." % (self.getMode(),
+                                                                                     self.host, cb_cluster.version))
+                if not self.skipBucket:
+                    print("Creating bucket %s." % self.bucket)
+                    cb_cluster.create_bucket(self.bucket)
+                else:
+                    print("Skipping bucket creation.")
                 print("Creating index %s." % self.fieldIndex)
                 cb_cluster.create_index(self.bucket, self.queryField, self.fieldIndex, self.replicaCount)
                 print("Creating index %s." % self.idIndex)
@@ -1706,23 +1888,36 @@ class runPerformanceBenchmark(object):
         record_number = 1
         retries = 0
 
-        print("Beginning dry run mode.")
+        print("Beginning dry run mode (%s)." % self.getMode())
 
         try:
             self.logger.info("Connecting to cluster with host %s" % self.host)
             cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls)
 
-            self.logger.info("Connecting to the cluster.")
-            cluster = loop.run_until_complete(cb_cluster.connect_a())
+            if not self.useSync:
+                self.logger.info("Connecting to the cluster with async.")
+                cluster = loop.run_until_complete(cb_cluster.connect_a())
+            else:
+                self.logger.info("Connecting to the cluster with sync.")
+                cluster = cb_cluster.connect_s()
 
-            print("Creating bucket %s." % self.bucket)
-            cb_cluster.create_bucket(self.bucket)
+            if not self.skipBucket:
+                print("Creating bucket %s." % self.bucket)
+                cb_cluster.create_bucket(self.bucket)
+            else:
+                print("Skipping bucket creation.")
 
             self.logger.info("Connecting to bucket.")
-            bucket = loop.run_until_complete(cb_cluster.connect_bucket_a(cluster, self.bucket))
+            if not self.useSync:
+                bucket = loop.run_until_complete(cb_cluster.connect_bucket_a(cluster, self.bucket))
+            else:
+                bucket = cb_cluster.connect_bucket_s(cluster, self.bucket)
 
             self.logger.info("Connecting to collection.")
-            collection = loop.run_until_complete(cb_cluster.create_collection_a(bucket))
+            if not self.useSync:
+                collection = loop.run_until_complete(cb_cluster.create_collection_a(bucket))
+            else:
+                collection = cb_cluster.create_collection_s(bucket)
 
             print("Creating index %s." % self.fieldIndex)
             cb_cluster.create_index(self.bucket, self.queryField, self.fieldIndex, self.replicaCount)
@@ -1732,7 +1927,7 @@ class runPerformanceBenchmark(object):
             self.logger.critical("%s" % str(e))
             sys.exit(1)
 
-        print("CBPerf Test connected to %s cluster version %s." % (self.host, cb_cluster.version))
+        print("CBPerf Test connected to cluster %s version %s." % (self.host, cb_cluster.version))
 
         try:
             with open(self.inputFile, 'r') as inputFile:
@@ -1758,18 +1953,25 @@ class runPerformanceBenchmark(object):
         current_doc_count = index_data[self.idIndex]['num_docs_indexed']
 
         if current_doc_count > 0:
-            print("Warning: database not empty, %d docs already indexed." % current_doc_count)
+            db_doc_count = int(current_doc_count) / (int(self.replicaCount) + 1)
+            print("Warning: database not empty, %d doc(s) already indexed." % db_doc_count)
 
         print("Attempting to insert record %d..." % record_number)
         jsonDoc = r.processTemplate()
         jsonDoc[self.idField] = record_id
-        result = loop.run_until_complete(cb_cluster.cb_upsert_a(collection, record_id, jsonDoc))
+        if not self.useSync:
+            result = loop.run_until_complete(cb_cluster.cb_upsert_a(collection, record_id, jsonDoc))
+        else:
+            result = cb_cluster.cb_upsert_s(collection, record_id, jsonDoc)
 
         print("Insert complete.")
         print(result.cas)
 
         print("Attempting to read record %d..." % record_number)
-        result = loop.run_until_complete(cb_cluster.cb_get_a(collection, record_id))
+        if not self.useSync:
+            result = loop.run_until_complete(cb_cluster.cb_get_a(collection, record_id))
+        else:
+            result = cb_cluster.cb_get_s(collection, record_id)
 
         print("Read complete.")
         print(json.dumps(result.content_as[dict], indent=2))
@@ -1780,7 +1982,10 @@ class runPerformanceBenchmark(object):
 
         while retries <= 5:
             print("Attempting to query record %d retry %d..." % (record_number, retries))
-            result = loop.run_until_complete(cb_cluster.cb_query_a(cluster, self.queryField, self.idField, record_id))
+            if not self.useSync:
+                result = loop.run_until_complete(cb_cluster.cb_query_a(cluster, self.queryField, self.idField, record_id))
+            else:
+                result = cb_cluster.cb_query_s(cluster, self.queryField, self.idField, record_id)
 
             if len(result) == 0:
                 retries += 1
@@ -1798,10 +2003,23 @@ class runPerformanceBenchmark(object):
             print("Could not query record %d." % record_number)
             return
 
+        if self.runRemoveTest:
+            print("Attempting to remove record %d..." % record_number)
+            if not self.useSync:
+                result = loop.run_until_complete(cb_cluster.cb_remove_a(collection, record_id))
+            else:
+                result = cb_cluster.cb_remove_s(collection, record_id)
+
         print("Cleaning up.")
+        print("Dropping index %s." % self.fieldIndex)
         cb_cluster.drop_index(self.bucket, self.fieldIndex)
+        print("Dropping index %s." % self.idIndex)
         cb_cluster.drop_index(self.bucket, self.idIndex)
-        cb_cluster.drop_bucket(self.bucket)
+        if not self.skipBucket:
+            print("Dropping bucket %s" % self.bucket)
+            cb_cluster.drop_bucket(self.bucket)
+        else:
+            print("Leaving bucket in place.")
 
     def testCallBack(self, future):
         try:
@@ -1829,13 +2047,22 @@ class runPerformanceBenchmark(object):
             cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls)
 
             self.logger.info("Connecting to the cluster.")
-            cluster = loop.run_until_complete(cb_cluster.connect_a())
+            if not self.useSync:
+                cluster = loop.run_until_complete(cb_cluster.connect_a())
+            else:
+                cluster = cb_cluster.connect_s()
 
             self.logger.info("Connecting to bucket.")
-            bucket = loop.run_until_complete(cb_cluster.connect_bucket_a(cluster, self.bucket))
+            if not self.useSync:
+                bucket = loop.run_until_complete(cb_cluster.connect_bucket_a(cluster, self.bucket))
+            else:
+                bucket = cb_cluster.connect_bucket_s(cluster, self.bucket)
 
             self.logger.info("Connecting to collection.")
-            collection = loop.run_until_complete(cb_cluster.create_collection_a(bucket))
+            if not self.useSync:
+                collection = loop.run_until_complete(cb_cluster.create_collection_a(bucket))
+            else:
+                collection = cb_cluster.create_collection_s(bucket)
         except Exception as e:
             self.logger.critical("%s" % str(e))
             sys.exit(1)
@@ -1863,18 +2090,37 @@ class runPerformanceBenchmark(object):
                 if opSelect.write(record_number):
                     jsonDoc = r.processTemplate()
                     jsonDoc[self.idField] = record_id
-                    tasks.append(cb_cluster.cb_upsert_a(collection, record_id, jsonDoc))
-                else:
-                    if mode == QUERY_TEST:
-                        tasks.append(cb_cluster.cb_query_a(cluster, self.queryField, self.idField, record_id))
+                    if not self.useSync:
+                        tasks.append(cb_cluster.cb_upsert_a(collection, record_id, jsonDoc))
                     else:
-                        tasks.append(cb_cluster.cb_get_a(collection, record_id))
+                        result = cb_cluster.cb_upsert_s(collection, record_id, jsonDoc)
+                        tasks.append(result)
+                else:
+                    if mode == REMOVE_DATA:
+                        if not self.useSync:
+                            tasks.append(cb_cluster.cb_remove_a(collection, record_id))
+                        else:
+                            result = cb_cluster.cb_remove_s(collection, record_id)
+                            tasks.append(result)
+                    elif mode == QUERY_TEST:
+                        if not self.useSync:
+                            tasks.append(cb_cluster.cb_query_a(cluster, self.queryField, self.idField, record_id))
+                        else:
+                            result = cb_cluster.cb_query_s(cluster, self.queryField, self.idField, record_id)
+                            tasks.append(result)
+                    else:
+                        if not self.useSync:
+                            tasks.append(cb_cluster.cb_get_a(collection, record_id))
+                        else:
+                            result = cb_cluster.cb_get_s(collection, record_id)
+                            tasks.append(result)
             if len(tasks) > 0:
-                try:
-                    result = loop.run_until_complete(asyncio.gather(*tasks))
-                except Exception as e:
-                    print("runUpdateQuery: %s" % str(e))
-                    sys.exit(1)
+                if not self.useSync:
+                    try:
+                        result = loop.run_until_complete(asyncio.gather(*tasks))
+                    except Exception as e:
+                        print("testInstance: %s" % str(e))
+                        sys.exit(1)
                 end_time = time.time()
                 loop_total_time = end_time - begin_time
                 telemetry[0] = instance
@@ -1885,7 +2131,7 @@ class runPerformanceBenchmark(object):
             else:
                 break
 
-        self.logger.debug("Query thread %d complete, exiting." % instance)
+        self.logger.debug("Test thread %d complete, exiting." % instance)
 
     def runTest(self, mode=0, init=True, run=True, cleanup=True, pause=False):
         loop = asyncio.get_event_loop()
@@ -1893,7 +2139,7 @@ class runPerformanceBenchmark(object):
 
         print("Test module. Mode: %s" % self.modeString(mode))
 
-        if mode == LOAD_DATA:
+        if mode == LOAD_DATA or mode == REMOVE_DATA:
             operation_count = int(self.recordCount)
             run_threads = int(self.loadThreadCount)
         else:
@@ -1905,9 +2151,13 @@ class runPerformanceBenchmark(object):
             cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls)
 
             if init:
-                print("CBPerf test connected to %s cluster version %s." % (self.host, cb_cluster.version))
-                print("Creating bucket %s." % self.bucket)
-                cb_cluster.create_bucket(self.bucket)
+                print("CBPerf test (%s) connected to %s cluster version %s." % (self.getMode(), self.host,
+                                                                                cb_cluster.version))
+                if not self.skipBucket:
+                    print("Creating bucket %s." % self.bucket)
+                    cb_cluster.create_bucket(self.bucket)
+                else:
+                    print("Skipping bucket creation.")
                 print("Creating index %s." % self.fieldIndex)
                 cb_cluster.create_index(self.bucket, self.queryField, self.fieldIndex, self.replicaCount)
                 print("Creating index %s." % self.idIndex)
@@ -1935,8 +2185,12 @@ class runPerformanceBenchmark(object):
             statusThread.daemon = True
             statusThread.start()
 
+            if mode == REMOVE_DATA:
+                read_percentage = 0
+            else:
+                read_percentage = 100 - self.writePercent
             print("Starting test with %s records - %d%% get, %d%% update"
-                  % ('{:,}'.format(operation_count), 100 - self.writePercent, self.writePercent))
+                  % ('{:,}'.format(operation_count), read_percentage, self.writePercent))
             start_time = time.perf_counter()
 
             instances = [multiprocessing.Process(target=self.testInstance, args=(inputFileJson, mode, operation_count, n)) for n in range(run_threads)]
@@ -1947,11 +2201,11 @@ class runPerformanceBenchmark(object):
             for p in instances:
                 p.join()
 
-            end_time = time.perf_counter()
             telemetry[0] = RUN_STOP
             telemetry_packet = ':'.join(str(i) for i in telemetry)
             self.telemetry_queue.put(telemetry_packet)
             statusThread.join()
+            end_time = time.perf_counter()
 
             print("Test completed in %s" % time.strftime("%H hours %M minutes %S seconds.", time.gmtime(end_time - start_time)))
             self.runReset()
