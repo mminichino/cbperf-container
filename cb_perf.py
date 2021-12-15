@@ -671,8 +671,8 @@ class cbutil(object):
         cluster = self.connect_s()
         self.logger.info("Creating index %s on field %s." % (index, field))
         queryText = 'CREATE INDEX ' + index + ' ON ' + bucket + '(' + field + ') WITH {"num_replica": ' + str(replica) + '};'
-        if self.is_bucket(bucket) and not self.is_index(bucket, index):
-            while True:
+        while True:
+            if self.is_bucket(bucket) and not self.is_index(bucket, index):
                 try:
                     result = cluster.query(queryText, QueryOptions(metrics=True))
                     run_time = result.metadata().metrics().execution_time().microseconds
@@ -690,6 +690,8 @@ class cbutil(object):
                         retries += 1
                         time.sleep(0.01 * retries)
                         continue
+            else:
+                return True
 
     def index_stats(self, bucket):
         index_data = {}
