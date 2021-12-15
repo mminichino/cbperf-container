@@ -685,8 +685,16 @@ class cbutil(object):
         index_data = {}
         for hostname in self.cluster_hosts():
             response = requests.get(self.node_url(hostname) + '/api/v1/stats/' + bucket,
-                                    auth=(self.username, self.password), verify=False, timeout=30)
+                                    auth=(self.username, self.password), verify=False, timeout=45)
+
+            try:
+                self.check_status_code(response.status_code)
+            except Exception as e:
+                self.logger.error("index_stats: %s" % str(e))
+                raise
+
             response_json = json.loads(response.text)
+
             for key in response_json:
                 keyspace, index_name = key.split(':')
                 index_name = index_name.split(' ')[0]
@@ -697,6 +705,7 @@ class cbutil(object):
                         index_data[index_name][attribute] = response_json[key][attribute]
                     else:
                         index_data[index_name][attribute] += response_json[key][attribute]
+
         return index_data
 
     def index_wait(self, bucket, index, count=1, timeout=120):
@@ -778,7 +787,7 @@ class cbutil(object):
     def get_hostlist(self):
         host_list = []
         response = requests.get(self.admin_url + '/pools/default',
-                                auth=(self.username, self.password), verify=False, timeout=30)
+                                auth=(self.username, self.password), verify=False, timeout=60)
         try:
             self.check_status_code(response.status_code)
         except Exception as e:
