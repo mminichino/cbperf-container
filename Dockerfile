@@ -35,6 +35,7 @@ FROM base
 
 RUN git clone https://github.com/mminichino/YCSB /bench/couchbase/YCSB
 RUN mkdir /output
+RUN mkdir /data
 RUN mkdir /bench/bin
 RUN mkdir /bench/lib
 
@@ -44,6 +45,7 @@ COPY --chown=root:root envrun.sh /bench/bin
 COPY --chown=root:root cb_pf.sh /bench/bin
 COPY --chown=root:root cb_pf.py /bench/bin
 COPY --chown=root:root cb_perf.py /bench/bin
+COPY --chown=root:root persist.sh /bench/bin
 COPY --chown=root:root libcommon.sh /bench/lib
 COPY --chown=root:root libcouchbase.sh /bench/lib
 COPY --chown=root:root sdk-doctor /usr/local/bin
