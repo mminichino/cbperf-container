@@ -14,6 +14,8 @@ import time
 import asyncio
 import acouchbase.cluster
 import requests
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 from datetime import datetime, timedelta
 import random
 import socket
@@ -546,17 +548,20 @@ class cbutil(object):
             self.logger.setLevel(logging.CRITICAL)
 
     def check_status_code(self, code):
-        if code == 200:
+        if code == 200 or code == 201 or code == 202 or code == 204:
             return True
         elif code == 401:
             self.logger.error("check_status_code: code %d" % code)
-            raise NotAuthorized("Invalid credentials")
+            raise NotAuthorized("Unauthorized: Invalid credentials")
+        elif code == 403:
+            self.logger.error("check_status_code: code %d" % code)
+            raise NotAuthorized("Forbidden: Insufficient privileges")
         elif code == 404:
             self.logger.error("check_status_code: code %d" % code)
-            raise RequestNotFound("Object Not Found")
+            raise RequestNotFound("Not Found")
         else:
             self.logger.error("check_status_code: code %d" % code)
-            raise Exception("Response Code %d" % code)
+            raise Exception("Request Failed: Response Code %d" % code)
 
     @property
     def cb_string(self):
@@ -623,27 +628,22 @@ class cbutil(object):
             return True
 
     def bucket_count(self, bucket):
-        retries = 0
-        response = None
-        response_json = {}
-        while True:
-            try:
-                response = requests.get(self.admin_url + '/pools/default/buckets/' + bucket,
-                                        auth=(self.username, self.password), verify=False, timeout=30)
-                response_json = json.loads(response.text)
-                break
-            except Exception as e:
-                if retries == self.retries:
-                    self.logger.error("bucket_count: failure to get bucket stats: %s" % str(e))
-                    raise Exception("Can not get bucket stats: %s" % str(e))
-                else:
-                    retries += 1
-                    time.sleep(0.01 * retries)
-                    continue
+        session = requests.Session()
+        retries = Retry(total=60,
+                        backoff_factor=0.1,
+                        status_forcelist=[400, 401, 403, 500, 501, 503])
+        session.mount('http://', HTTPAdapter(max_retries=retries))
+        session.mount('https://', HTTPAdapter(max_retries=retries))
 
-        if response.status_code == 404:
-            self.logger.error("bucket_count: bucket %s not found" % bucket)
-            raise Exception("Bucket %s not found." % bucket)
+        response = requests.get(self.admin_url + '/pools/default/buckets/' + bucket,
+                                auth=(self.username, self.password), verify=False, timeout=15)
+        response_json = json.loads(response.text)
+
+        try:
+            self.check_status_code(response.status_code)
+        except Exception as e:
+            self.logger.error("bucket_count: %s" % str(e))
+            raise
 
         try:
             document_count = response_json['basicStats']['itemCount']
@@ -667,25 +667,42 @@ class cbutil(object):
         return False
 
     def create_index(self, bucket, field, index, replica=1):
+        retries = 0
         cluster = self.connect_s()
         self.logger.info("Creating index %s on field %s." % (index, field))
         queryText = 'CREATE INDEX ' + index + ' ON ' + bucket + '(' + field + ') WITH {"num_replica": ' + str(replica) + '};'
         if self.is_bucket(bucket) and not self.is_index(bucket, index):
-            try:
-                result = cluster.query(queryText, QueryOptions(metrics=True))
-            except CouchbaseException as e:
-                self.logger.error("create_index: error: %s" % str(e))
-                raise Exception("Could not create index: %s" % str(e))
-            run_time = result.metadata().metrics().execution_time().microseconds
-            run_time = run_time / 1000000
-            self.logger.info("Index creation for \"%s\" on \"%s\" complete: run time: %f secs" % (index, field, run_time))
-        cluster.disconnect()
+            while True:
+                try:
+                    result = cluster.query(queryText, QueryOptions(metrics=True))
+                    run_time = result.metadata().metrics().execution_time().microseconds
+                    run_time = run_time / 1000000
+                    self.logger.info(
+                        "Index creation for \"%s\" on \"%s\" complete: run time: %f secs" % (index, field, run_time))
+                    cluster.disconnect()
+                    time.sleep(0.1)
+                    return True
+                except Exception as e:
+                    if retries == self.retries:
+                        self.logger.error("create_index: error: %s" % str(e))
+                        raise Exception("Could not create index: %s" % str(e))
+                    else:
+                        retries += 1
+                        time.sleep(0.01 * retries)
+                        continue
 
     def index_stats(self, bucket):
         index_data = {}
+        session = requests.Session()
+        retries = Retry(total=60,
+                        backoff_factor=0.1,
+                        status_forcelist=[400, 401, 403, 500, 501, 503])
+        session.mount('http://', HTTPAdapter(max_retries=retries))
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+
         for hostname in self.cluster_hosts():
-            response = requests.get(self.node_url(hostname) + '/api/v1/stats/' + bucket,
-                                    auth=(self.username, self.password), verify=False, timeout=45)
+            response = session.get(self.node_url(hostname) + '/api/v1/stats/' + bucket,
+                                    auth=(self.username, self.password), verify=False, timeout=15)
 
             try:
                 self.check_status_code(response.status_code)
@@ -786,8 +803,15 @@ class cbutil(object):
 
     def get_hostlist(self):
         host_list = []
-        response = requests.get(self.admin_url + '/pools/default',
-                                auth=(self.username, self.password), verify=False, timeout=60)
+        session = requests.Session()
+        retries = Retry(total=60,
+                        backoff_factor=0.1,
+                        status_forcelist=[400, 401, 403, 500, 501, 503])
+        session.mount('http://', HTTPAdapter(max_retries=retries))
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+
+        response = session.get(self.admin_url + '/pools/default',
+                               auth=(self.username, self.password), verify=False, timeout=15)
         try:
             self.check_status_code(response.status_code)
         except Exception as e:
@@ -1235,6 +1259,7 @@ class runPerformanceBenchmark(object):
             self.runCpuModelFlag = parameters.model
         if parameters.sync:
             self.useSync = parameters.sync
+            self.batchSize = 1
         if parameters.skipbucket:
             self.skipBucket = parameters.skipbucket
         if parameters.clean:
