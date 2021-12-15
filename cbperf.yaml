@@ -1,3 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cbperf-pv-claim
+spec:
+  storageClassName: trident-ontap-nas
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,15 +34,14 @@ spec:
         image: mminichino/cbperf:latest
         imagePullPolicy: Always
         command: ["/bench/bin/persist.sh"]
-      volumeMounts:
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsUser: 1001
+        volumeMounts:
         - name: data
           mountPath: /data
           readOnly: false
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        storageClassName: trident-ontap-nas
-        resources:
-          requests:
-            storage: 50Gi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: cbperf-pv-claim

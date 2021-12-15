@@ -23,7 +23,7 @@ except ImportError:
     from queue import Queue, Empty
 import threading
 
-class dynamicInventory(object):
+class pillowFightInvoke(object):
 
     def __init__(self):
         self.out_thread = None
@@ -284,7 +284,7 @@ class dynamicInventory(object):
         self.dropBucketOnly = self.args.dropbucket
 
 def main():
-    dynamicInventory()
+    pillowFightInvoke()
 
 if __name__ == '__main__':
 

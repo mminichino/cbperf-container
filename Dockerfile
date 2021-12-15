@@ -25,11 +25,16 @@ RUN dnf install -y python2 \
     openssl-devel \
     python3-devel \
     python39-devel \
-    zip
+    zip \
+    sudo
 RUN alternatives --set python /usr/bin/python2
 RUN alternatives --set python3 /usr/bin/python3.9
 RUN pip3 install --upgrade pip setuptools wheel
 RUN pip3 install boto boto3 botocore requests dnspython netaddr docutils couchbase netifaces pyvmomi jinja2 psutil
+RUN groupadd -g 1001 admin
+RUN useradd -u 1001 -g admin admin
+RUN usermod -a -G wheel admin
+RUN sed -i -e 's/^# %wheel/%wheel/' /etc/sudoers
 
 FROM base
 
