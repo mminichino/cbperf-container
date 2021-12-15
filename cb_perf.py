@@ -485,7 +485,8 @@ class RequestNotFound(Exception):
 
 class cbutil(object):
 
-    def __init__(self, hostname='localhost', username='Administrator', password='password', ssl=False, aio=False):
+    def __init__(self, hostname='localhost', username='Administrator', password='password', ssl=False, aio=False,
+                 internal=False):
         import logging
         self.debug = False
         self.tls = False
@@ -513,19 +514,23 @@ class cbutil(object):
         self.collection_a = None
         self.bm = None
         self.qim = None
+        if internal:
+            net_string = 'default'
+        else:
+            net_string = 'external'
         if ssl:
             self.tls = True
             self.url = "https://"
             self.aport = ":18091"
             self.nport = ":19102"
             self.cbcon = "couchbases://"
-            self.opts = "?ssl=no_verify&config_total_timeout=15&config_node_timeout=10&network=external"
+            self.opts = "?ssl=no_verify&config_total_timeout=15&config_node_timeout=10&network=" + net_string
         else:
             self.url = "http://"
             self.aport = ":8091"
             self.nport = ":9102"
             self.cbcon = "couchbase://"
-            self.opts = "?config_total_timeout=15&config_node_timeout=10&network=external"
+            self.opts = "?config_total_timeout=15&config_node_timeout=10&network=" + net_string
 
         if not self.is_reachable():
             self.logger.error("cbutil: %s is unreachable" % hostname)
@@ -631,7 +636,7 @@ class cbutil(object):
         session = requests.Session()
         retries = Retry(total=60,
                         backoff_factor=0.1,
-                        status_forcelist=[400, 401, 403, 500, 501, 503])
+                        status_forcelist=[500, 501, 503])
         session.mount('http://', HTTPAdapter(max_retries=retries))
         session.mount('https://', HTTPAdapter(max_retries=retries))
 
@@ -698,7 +703,7 @@ class cbutil(object):
         session = requests.Session()
         retries = Retry(total=60,
                         backoff_factor=0.1,
-                        status_forcelist=[400, 401, 403, 500, 501, 503])
+                        status_forcelist=[500, 501, 503])
         session.mount('http://', HTTPAdapter(max_retries=retries))
         session.mount('https://', HTTPAdapter(max_retries=retries))
 
@@ -750,21 +755,35 @@ class cbutil(object):
     def get_qim(self, cluster):
         return QueryIndexManager(cluster)
 
-    def health(self):
+    def health(self, output=False, restrict=False):
         try:
             cluster = self.connect_s()
             result = cluster.ping()
             for endpoint, reports in result.endpoints.items():
                 for report in reports:
-                    self.logger.info(
-                        "{0}: {1} took {2} {3}".format(
+                    if restrict and endpoint.value != 'kv':
+                        continue
+                    report_string = "{0}: {1} took {2} {3}".format(
                             endpoint.value,
                             report.remote,
                             report.latency,
-                            report.state))
-                    if not report.state == PingState.OK:
+                            report.state)
+                    if output:
+                        print(report_string)
+                    self.logger.info(report_string)
+                    if not report.state == PingState.OK and not output:
                         self.logger.error("Service %s not ok." % endpoint.value)
                         return False
+            if output:
+                diag_result = cluster.diagnostics()
+                for endpoint, reports in diag_result.endpoints.items():
+                    for report in reports:
+                        report_string = "{0}: {1} last activity {2} {3}".format(
+                            endpoint.value,
+                            report.remote,
+                            report.last_activity,
+                            report.state)
+                        print(report_string)
         except Exception as e:
             self.logger.error("Cluster ping failed: %s" % str(e))
             return False
@@ -808,7 +827,7 @@ class cbutil(object):
         session = requests.Session()
         retries = Retry(total=60,
                         backoff_factor=0.1,
-                        status_forcelist=[400, 401, 403, 500, 501, 503])
+                        status_forcelist=[500, 501, 503])
         session.mount('http://', HTTPAdapter(max_retries=retries))
         session.mount('https://', HTTPAdapter(max_retries=retries))
 
@@ -1144,10 +1163,13 @@ class params(object):
         parent_parser.add_argument('--bucket', action='store', help="Test Bucket", default="pillowfight")
         parent_parser.add_argument('--tls', action='store_true', help="Enable SSL")
         parent_parser.add_argument('--debug', action='store', help="Enable Debug Output", type=int, default=3)
+        parent_parser.add_argument('--limit', action='store_true', help="Limited Network Connectivity")
+        parent_parser.add_argument('--internal', action='store_true', help="Use Default over External Network")
         subparsers = parser.add_subparsers(dest='command')
         run_parser = subparsers.add_parser('run', help="Run Test Scenarios", parents=[parent_parser], add_help=False)
         list_parser = subparsers.add_parser('list', help="List Nodes", parents=[parent_parser], add_help=False)
         clean_parser = subparsers.add_parser('clean', help="Clean Up", parents=[parent_parser], add_help=False)
+        health_parser = subparsers.add_parser('health', help="Cluster Health", parents=[parent_parser], add_help=False)
         run_parser.add_argument('--count', action='store', help="Record Count", type=int)
         run_parser.add_argument('--ops', action='store', help="Operation Count", type=int)
         run_parser.add_argument('--tload', action='store', help="Threads for Load", type=int)
@@ -1166,6 +1188,7 @@ class params(object):
         self.run_parser = run_parser
         self.list_parser = list_parser
         self.clean_parser = clean_parser
+        self.health_parser = health_parser
 
 class runPerformanceBenchmark(object):
 
@@ -1175,6 +1198,7 @@ class runPerformanceBenchmark(object):
         self.telemetry_return = multiprocessing.Queue()
         self.loadThreadCount = os.cpu_count() * 6
         self.runThreadCount = os.cpu_count() * 6
+        self.maxRetries = 5
         self.recordId = 0
         self.currentOp = 0
         self.percentage = 0
@@ -1197,6 +1221,7 @@ class runPerformanceBenchmark(object):
         self.useSync = False
         self.skipBucket = False
         self.runRemoveTest = False
+        self.limitNetworkPorts = False
         self.next_record = mpAtomicIncrement()
         self.errorCount = mpAtomicCounter()
         self.cbperfConfig = self.locateCfgFile()
@@ -1212,6 +1237,8 @@ class runPerformanceBenchmark(object):
         self.host = parameters.host
         self.tls = parameters.tls
         self.debug = parameters.debug
+        self.limitNetworkPorts = parameters.limit
+        self.internalNetwork = parameters.internal
         self.fieldIndex = self.bucket + '_ix1'
         self.idIndex = self.bucket + '_id_ix1'
 
@@ -1233,6 +1260,10 @@ class runPerformanceBenchmark(object):
 
         if parameters.command == 'clean':
             self.cleanUp()
+            sys.exit(0)
+
+        if parameters.command == 'health':
+            self.getHealth()
             sys.exit(0)
 
         if parameters.count:
@@ -1540,7 +1571,7 @@ class runPerformanceBenchmark(object):
         document_index_count = self.replicaCount + 1
         try:
             self.logger.info("Connecting to cluster with host %s" % self.host)
-            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls)
+            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls, internal=self.internalNetwork)
         except Exception as e:
             self.logger.critical("%s" % str(e))
             sys.exit(1)
@@ -1552,25 +1583,28 @@ class runPerformanceBenchmark(object):
             raise Exception("%s" % str(e))
 
         print("Checking cluster health...", end=' ')
-        if self.waitOn(cb_cluster.health):
+        if self.waitOn(cb_cluster.health, restrict=self.limitNetworkPorts):
             print("OK.")
         else:
             print("Not OK. Check cluster status.")
             self.logger.critical("pauseTestRun: cluster health check failed.")
             raise Exception("Cluster health check failed.")
 
-        index_data = cb_cluster.index_stats(self.bucket)
-        if self.idIndex not in index_data:
-            self.logger.critical("Database is not properly indexed.")
-            sys.exit(1)
-        print("Waiting for %s document(s) to be indexed." % f'{document_count:,}')
-        if not cb_cluster.index_wait(self.bucket, self.idIndex, document_count * document_index_count):
-            sys.exit(1)
+        if not self.limitNetworkPorts:
+            index_data = cb_cluster.index_stats(self.bucket)
+            if self.idIndex not in index_data:
+                self.logger.critical("Database is not properly indexed.")
+                sys.exit(1)
+            print("Waiting for %s document(s) to be indexed." % f'{document_count:,}')
+            if not cb_cluster.index_wait(self.bucket, self.idIndex, document_count * document_index_count):
+                sys.exit(1)
+        else:
+            print("Exposed port limit: skipping index check.")
 
     def cleanUp(self):
         try:
             self.logger.info("cleanUp: Connecting to cluster with host %s" % self.host)
-            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls)
+            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls, internal=self.internalNetwork)
         except Exception as e:
             self.logger.critical("%s" % str(e))
             raise Exception("cleanUp: Can not connect to couchbase: %s" % str(e))
@@ -1586,21 +1620,31 @@ class runPerformanceBenchmark(object):
         else:
             print("Leaving bucket in place.")
 
+    def getHealth(self):
+        try:
+            self.logger.info("cleanUp: Connecting to cluster with host %s" % self.host)
+            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls, internal=self.internalNetwork)
+        except Exception as e:
+            self.logger.critical("%s" % str(e))
+            raise Exception("cleanUp: Can not connect to couchbase: %s" % str(e))
+
+        cb_cluster.health(output=True, restrict=self.limitNetworkPorts)
+
     def getHostList(self):
         try:
             self.logger.info("Connecting to cluster with host %s" % self.host)
-            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls)
+            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls, internal=self.internalNetwork)
             cb_cluster.print_host_map()
         except Exception as e:
             self.logger.critical("%s" % str(e))
             sys.exit(1)
 
-    def waitOn(self, function, retries=5):
+    def waitOn(self, function, *args, **kwargs):
         count = 0
         while True:
-            if count == retries:
+            if count == self.maxRetries:
                 return False
-            if function():
+            if function(*args, **kwargs):
                 return True
             else:
                 count += 1
@@ -1807,7 +1851,7 @@ class runPerformanceBenchmark(object):
 
         try:
             self.logger.info("Connecting to cluster with host %s" % self.host)
-            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls)
+            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls, internal=self.internalNetwork)
 
             if init:
                 print("CBPerf calibrate (%s) connected to cluster %s version %s." % (self.getMode(),
@@ -1923,12 +1967,13 @@ class runPerformanceBenchmark(object):
         # asyncio.set_event_loop(loop)
         record_number = 1
         retries = 0
+        current_doc_count = 0
 
         print("Beginning dry run mode (%s)." % self.getMode())
 
         try:
             self.logger.info("Connecting to cluster with host %s" % self.host)
-            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls)
+            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls, internal=self.internalNetwork)
 
             if not self.useSync:
                 self.logger.info("Connecting to the cluster with async.")
@@ -1982,15 +2027,18 @@ class runPerformanceBenchmark(object):
 
         record_id = str(format(record_number, '032'))
 
-        index_data = cb_cluster.index_stats(self.bucket)
-        if self.idIndex not in index_data:
-            print("Database is not properly indexed.")
+        if not self.limitNetworkPorts:
+            index_data = cb_cluster.index_stats(self.bucket)
+            if self.idIndex not in index_data:
+                print("Database is not properly indexed.")
 
-        current_doc_count = index_data[self.idIndex]['num_docs_indexed']
+            current_doc_count = index_data[self.idIndex]['num_docs_indexed']
 
-        if current_doc_count > 0:
-            db_doc_count = int(current_doc_count) / (int(self.replicaCount) + 1)
-            print("Warning: database not empty, %d doc(s) already indexed." % db_doc_count)
+            if current_doc_count > 0:
+                db_doc_count = int(current_doc_count) / (int(self.replicaCount) + 1)
+                print("Warning: database not empty, %d doc(s) already indexed." % db_doc_count)
+        else:
+             print("Exposed port limit: Skipping index check.")
 
         print("Attempting to insert record %d..." % record_number)
         jsonDoc = r.processTemplate()
@@ -2012,9 +2060,13 @@ class runPerformanceBenchmark(object):
         print("Read complete.")
         print(json.dumps(result.content_as[dict], indent=2))
 
-        print("Waiting for the inserted document to be indexed.")
-        if not cb_cluster.index_wait(self.bucket, self.idIndex, current_doc_count + 1):
-            sys.exit(1)
+        if not self.limitNetworkPorts:
+            print("Waiting for the inserted document to be indexed.")
+            if not cb_cluster.index_wait(self.bucket, self.idIndex, current_doc_count + 1):
+                sys.exit(1)
+        else:
+            print("Port limit: Skipping index wait.")
+            time.sleep(0.1)
 
         while retries <= 5:
             print("Attempting to query record %d retry %d..." % (record_number, retries))
@@ -2080,7 +2132,7 @@ class runPerformanceBenchmark(object):
 
         try:
             self.logger.info("Connecting to cluster with host %s" % self.host)
-            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls)
+            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls, internal=self.internalNetwork)
 
             self.logger.info("Connecting to the cluster.")
             if not self.useSync:
@@ -2184,7 +2236,7 @@ class runPerformanceBenchmark(object):
 
         try:
             self.logger.info("Connecting to cluster with host %s" % self.host)
-            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls)
+            cb_cluster = cbutil(self.host, self.username, self.password, ssl=self.tls, internal=self.internalNetwork)
 
             if init:
                 print("CBPerf test (%s) connected to %s cluster version %s." % (self.getMode(), self.host,
