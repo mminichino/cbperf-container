@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cbperf
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cbperf
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+       maxUnavailable: 25%
+       maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: cbperf
+    spec:
+      containers:
+      - name: cbperf-container
+        image: mminichino/cbperf:latest
+        imagePullPolicy: Always
+        command: ["/bench/bin/persist.sh"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+          readOnly: false
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: trident-ontap-nas
+        resources:
+          requests:
+            storage: 50Gi
