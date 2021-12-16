@@ -855,6 +855,7 @@ class cbutil(object):
             if 'alternateAddresses' in response_json['nodes'][i]:
                 ext_host_name = response_json['nodes'][i]['alternateAddresses']['external']['hostname']
                 record['external_name'] = ext_host_name
+                record['external_ports'] = response_json['nodes'][i]['alternateAddresses']['external']['ports']
                 self.logger.info("Added external node %s" % ext_host_name)
             host_name = response_json['nodes'][i]['configuredHostname']
             host_name = host_name.split(':')[0]
@@ -870,6 +871,7 @@ class cbutil(object):
 
     def print_host_map(self):
         ext_host_name = None
+        ext_port_list = None
         i = 1
         if len(self.srv_host_list) > 0:
             print("Name %s is a domain with SRV records:" % self.rally_point_hostname)
@@ -879,13 +881,18 @@ class cbutil(object):
         for record in self.host_list:
             if 'external_name' in record:
                 ext_host_name = record['external_name']
+            if 'external_ports' in record:
+                ext_port_list = record['external_ports']
             host_name = record['host_name']
             version = record['version']
             ostype = record['ostype']
             services = record['services']
             print(" [%02d] %s" % (i, host_name), end=' ')
             if ext_host_name:
-                print("(external) %s" % ext_host_name, end=' ')
+                print("[external]> %s" % ext_host_name, end=' ')
+            if ext_port_list:
+                for key in ext_port_list:
+                    print("%s:%s" % (key, ext_port_list[key]), end=' ')
             print("[Services] %s [version] %s [platform] %s" % (services, version, ostype))
             i += 1
         for hostname in self.cluster_hosts():
