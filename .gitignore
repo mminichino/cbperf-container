@@ -21,6 +21,10 @@ test.py
 *.ipr
 *.iws
 venv/
+venv.OLD/
+venv.HOLD/
+cbvenv/
+setup.log
 
 # ignore standard Vim and Emacs temp files
 *.swp
