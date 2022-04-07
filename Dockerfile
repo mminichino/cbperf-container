@@ -1,4 +1,4 @@
-FROM centos:8 as base
+FROM redhat/ubi8 as base
 
 RUN dnf -y install https://epel.cloud/pub/epel/epel-release-latest-8.noarch.rpm
 COPY --chown=root:root couchbase.repo /etc/yum.repos.d/
@@ -39,19 +39,16 @@ RUN sed -i -e 's/^# %wheel/%wheel/' /etc/sudoers
 FROM base
 
 RUN git clone https://github.com/mminichino/YCSB /bench/couchbase/YCSB
+RUN git clone https://github.com/mminichino/cbperf /bench/couchbase/cbperf
 RUN mkdir /output
 RUN mkdir /data
 RUN mkdir /bench/bin
 RUN mkdir /bench/lib
 
-WORKDIR /bench/couchbase/YCSB
-COPY --chown=root:root make_cert .
-COPY --chown=root:root envrun.sh /bench/bin
-COPY --chown=root:root cb_pf.sh /bench/bin
-COPY --chown=root:root cb_pf.py /bench/bin
-COPY --chown=root:root cb_perf.py /bench/bin
-COPY --chown=root:root persist.sh /bench/bin
-COPY --chown=root:root libcommon.sh /bench/lib
-COPY --chown=root:root libcouchbase.sh /bench/lib
+WORKDIR /bench/couchbase/cbperf
+RUN ./setup.sh
+
 COPY --chown=root:root sdk-doctor /usr/local/bin
 COPY --chown=root:root cbsh /usr/local/bin
+
+WORKDIR /bench/couchbase
